@@ -1,34 +1,4 @@
-[9:43 p.m., 10/4/2026] Jhonnathan: import streamlit as st
-import sqlite3
-import pandas as pd
-import easyocr
-import numpy as np
-from PIL import Image
-from datetime import datetime
-from io import BytesIO
-import re
-
-# --- 1. CAPA DE INMUNIZACIÓN TOTAL (Colocar al puro principio) ---
-st.set_page_config(page_title="DataClientes Tropiexpress", page_icon="🛒", layout="centered")
-
-# Inyectar metadatos y CSS para bloquear traductores
-st.markdown("""
-    <head>
-        <meta name="google" content="notranslate">
-    </head>
-    <style>
-        /* Bloquea la traducción en toda la app */
-        .stApp {
-            unicode-bidi: isolate;
-        }
-        #root * {
-            direction: ltr !important;
-            text-align: left !important;
-        }
-    </style>
-    <script>
-        // Intento de blo…
-[9:49 p.m., 10/4/2026] Jhonnathan: import streamlit as st
+import streamlit as st
 import sqlite3
 import pandas as pd
 import easyocr
