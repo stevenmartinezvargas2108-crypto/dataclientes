@@ -8,21 +8,31 @@ from datetime import datetime
 from io import BytesIO
 import re
 
-# --- 1. INMUNIZACIÓN CONTRA TRADUCTOR (CRÍTICO) ---
-# Esto evita que Google Chrome intente traducir la página y rompa el código visual
+# --- 1. CAPA DE INMUNIZACIÓN TOTAL (Colocar al puro principio) ---
 st.set_page_config(page_title="DataClientes Tropiexpress", page_icon="🛒", layout="centered")
 
-st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
+# Inyectar metadatos y CSS para bloquear traductores
 st.markdown("""
+    <head>
+        <meta name="google" content="notranslate">
+    </head>
     <style>
-    /* Forzar que no se traduzca el contenido */
-    .stApp {
-        unicode-bidi: isolate;
-    }
+        /* Bloquea la traducción en toda la app */
+        .stApp {
+            unicode-bidi: isolate;
+        }
+        #root * {
+            direction: ltr !important;
+            text-align: left !important;
+        }
     </style>
+    <script>
+        // Intento de bloquear el widget de traducción si aparece
+        document.documentElement.classList.add('notranslate');
+    </script>
     """, unsafe_allow_html=True)
 
-# --- 2. INICIALIZACIÓN DE VARIABLES DE SESIÓN ---
+# --- 2. INICIALIZACIÓN DE VARIABLES ---
 if 'nombre_ocr' not in st.session_state: st.session_state.nombre_ocr = ""
 if 'dir_ocr' not in st.session_state: st.session_state.dir_ocr = ""
 if 'tel_ocr' not in st.session_state: st.session_state.tel_ocr = ""
@@ -75,13 +85,13 @@ else:
     tab1, tab2 = st.tabs(["🆕 Registro", "📊 Base de Datos"])
 
     with tab1:
-        archivo = st.file_uploader("Subir foto de datos (Cámara o Galería)", type=['png', 'jpg', 'jpeg'])
+        archivo = st.file_uploader("Subir foto (Cámara o Galería)", type=['png', 'jpg', 'jpeg'])
         
         if archivo:
             img = Image.open(archivo)
             st.image(img, caption="Imagen cargada", width=250)
             
-            if st.button("🔍 Extraer Datos de la Imagen", use_container_width=True):
+            if st.button("🔍 Extraer Datos", use_container_width=True):
                 with st.spinner("Leyendo manuscrito..."):
                     res = reader.readtext(np.array(img), paragraph=False)
                     lineas = [r[1] for r in res]
@@ -97,7 +107,6 @@ else:
                             st.session_state.dir_ocr = " ".join(lineas[1:])
 
         st.write("---")
-        st.subheader("Confirmar y Editar Datos")
         with st.form("form_reg", clear_on_submit=True):
             nombre = st.text_input("Nombre del Cliente", value=st.session_state.nombre_ocr)
             direccion = st.text_input("Dirección", value=st.session_state.dir_ocr)
@@ -117,10 +126,10 @@ else:
                         st.session_state.dir_ocr = ""
                         st.session_state.tel_ocr = ""
                         
-                        msg = (f"Hola {nombre}, te damos la bienvenida a supermercados Tropiexpress. "
-                               "Es un placer que hagas parte de nuestra familia.")
+                        msg = (f"Hola {nombre}, bienvenido a Tropiexpress Medellín. "
+                               "Es un gusto tenerte con nosotros.")
                         whatsapp_link = f"https://wa.me/{telefono}?text={msg.replace(' ', '%20')}"
-                        st.markdown(f"### [📲 Haz clic para enviar WhatsApp]({whatsapp_link})")
+                        st.markdown(f"### [📲 Enviar WhatsApp]({whatsapp_link})")
                         
                     except sqlite3.IntegrityError:
                         st.warning("⚠️ Este cliente ya existe.")
@@ -128,7 +137,6 @@ else:
                     st.error("Nombre y Teléfono son obligatorios.")
 
     with tab2:
-        st.subheader("Registros en Sistema")
         query = "SELECT fecha, nombre, direccion, telefono, punto_venta FROM clientes"
         if st.session_state['punto_venta'] != "Admin":
             query += f" WHERE punto_venta = '{st.session_state['punto_venta']}'"
@@ -140,4 +148,4 @@ else:
             output = BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False)
-            st.download_button("📥 Descargar Excel", output.getvalue(), "clientes_tropiexpress.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            st.download_button("📥 Descargar Excel", output.getvalue(), "clientes.xlsx", use_container_width=True)
