@@ -3,82 +3,127 @@ import sqlite3
 import pandas as pd
 import easyocr
 import numpy as np
-from PIL import Image, ImageOps
+import cv2
+from PIL import Image
 import re
+from datetime import datetime
 
-# Configuración Anti-Errores
-st.set_page_config(page_title="Tropiexpress Admin", page_icon="🛒")
+# --- CONFIGURACIÓN DE INTERFAZ ---
+st.set_page_config(page_title="Tropiexpress Pro", page_icon="🚀", layout="centered")
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
-# --- BASE DE DATOS MEJORADA ---
-def get_db():
-    conn = sqlite3.connect('tropiexpress_v5.db', check_same_thread=False)
-    # Agregamos UNIQUE al telefono para evitar duplicados reales
+# --- BASE DE DATOS ---
+def init_db():
+    conn = sqlite3.connect('tropiexpress_marketing.db', check_same_thread=False)
     conn.execute('''CREATE TABLE IF NOT EXISTS clientes 
-                 (id INTEGER PRIMARY KEY, nombre TEXT, direccion TEXT, telefono TEXT UNIQUE)''')
+                 (id INTEGER PRIMARY KEY, fecha TEXT, nombre TEXT, direccion TEXT, telefono TEXT UNIQUE)''')
     return conn
 
 @st.cache_resource
-def load_reader():
+def load_ocr():
+    # Modelo refinado para español
     return easyocr.Reader(['es'], gpu=False)
 
-db = get_db()
-reader = load_reader()
+db = init_db()
+reader = load_ocr()
 
-st.title("🛒 Registro Tropiexpress")
+# --- FUNCIONES DE MEJORA DE IMAGEN (Para mejorar la extracción) ---
+def mejorar_imagen_para_ocr(image):
+    # Convertir a arreglo para OpenCV
+    img_array = np.array(image.convert('RGB'))
+    img_cv = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+    
+    # 1. Escala de grises
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    
+    # 2. Eliminar sombras y resaltar texto (Umbral adaptativo)
+    # Esto ayuda cuando el papel tiene arrugas o sombras
+    processed = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    
+    # 3. Reducción de ruido (Denoising)
+    processed = cv2.medianBlur(processed, 3)
+    
+    return processed
 
-tab1, tab2 = st.tabs(["📝 Nuevo / Actualizar", "📋 Listado"])
+# --- INTERFAZ DE USUARIO ---
+st.title("🚀 Tropiexpress Marketing Pro")
+st.write("Registra clientes y fideliza con promociones automáticas.")
+
+tab1, tab2 = st.tabs(["📲 Registro & Venta", "📊 Base de Datos"])
 
 with tab1:
-    foto = st.file_uploader("Capturar foto de datos", type=['jpg', 'jpeg', 'png'])
-    n_sug, d_sug, t_sug = "", "", ""
-
+    foto = st.camera_input("Capturar datos del cliente") # Directo a la cámara para mejor enfoque
+    
     if foto:
-        img = Image.open(foto)
-        # --- MEJORA DE IMAGEN ---
-        # Reducimos tamaño para no agotar la RAM y mejorar velocidad
-        img.thumbnail((800, 800)) 
-        # Convertimos a escala de grises para mejor contraste de IA
-        gray_img = ImageOps.grayscale(img)
-        st.image(img, caption="Foto procesada", width=300)
+        img_original = Image.open(foto)
+        img_ia = mejorar_imagen_para_ocr(img_original)
         
-        if st.button("🔍 Escanear Datos"):
-            with st.spinner("Analizando..."):
-                res = reader.readtext(np.array(gray_img))
-                texto_completo = " ".join([r[1] for r in res])
+        st.image(img_ia, caption="Escáner Pro activo", width=300)
+        
+        if st.button("🔍 Extraer Datos con IA"):
+            with st.spinner("Analizando texto..."):
+                # Leer la imagen procesada
+                resultados = reader.readtext(img_ia)
+                texto_sucio = " ".join([res[1] for res in resultados])
                 
-                # Buscar teléfono (10 dígitos)
-                tel_find = re.search(r'\d{10}', texto_completo.replace(" ", ""))
-                if tel_find: t_sug = tel_find.group()
+                # Búsqueda agresiva de teléfono (10 dígitos)
+                nums = re.sub(r'[^0-9]', '', texto_sucio)
+                tel_encontrado = re.search(r'\d{10}', nums)
                 
-                # Lógica simple para nombre (primera línea detectada)
-                if res: n_sug = res[0][1]
+                st.session_state['n_ia'] = resultados[0][1] if resultados else ""
+                st.session_state['t_ia'] = tel_encontrado.group() if tel_encontrado else ""
+                st.session_state['d_ia'] = "" # La dirección suele requerir ajuste manual
 
-    with st.form("registro"):
-        tel = st.text_input("WhatsApp (Sin el 57)", value=t_sug)
-        nom = st.text_input("Nombre del Cliente", value=n_sug)
-        dir_entrega = st.text_input("Dirección de Entrega")
+    # FORMULARIO DE REGISTRO
+    with st.form("form_marketing", clear_on_submit=False):
+        st.subheader("Confirmación de Cliente")
+        col1, col2 = st.columns(2)
         
-        if st.form_submit_button("✅ Guardar Cliente"):
-            if tel and nom:
+        with col1:
+            nombre = st.text_input("Nombre", value=st.session_state.get('n_ia', ""))
+            whatsapp = st.text_input("WhatsApp", value=st.session_state.get('t_ia', ""))
+        with col2:
+            direccion = st.text_input("Dirección", value=st.session_state.get('d_ia', ""))
+            promo = st.selectbox("Estrategia de Atracción", [
+                "10% Descuento Primera Compra",
+                "Envío Gratis en este pedido",
+                "Bono de $5.000 para mañana",
+                "Sin promoción"
+            ])
+
+        if st.form_submit_button("✅ Guardar y Fidelizar Cliente"):
+            if nombre and whatsapp:
                 try:
-                    # Intenta insertar, si el teléfono existe (UNIQUE), falla y va al except
-                    db.execute("INSERT INTO clientes (nombre, direccion, telefono) VALUES (?,?,?)", 
-                               (nom, dir_entrega, tel))
+                    fecha_hoy = datetime.now().strftime("%d/%m/%Y")
+                    db.execute("INSERT INTO clientes (fecha, nombre, direccion, telefono) VALUES (?,?,?,?)",
+                               (fecha_hoy, nombre, direccion, whatsapp))
                     db.commit()
-                    st.success(f"NUEVO CLIENTE: {nom} guardado.")
-                except sqlite3.IntegrityError:
-                    # Si ya existe el teléfono, actualizamos los datos existentes
-                    db.execute("UPDATE clientes SET nombre=?, direccion=? WHERE telefono=?", 
-                               (nom, dir_entrega, tel))
+                    st.success(f"¡{nombre} ha sido registrado!")
+                except:
+                    db.execute("UPDATE clientes SET nombre=?, direccion=? WHERE telefono=?",
+                               (nombre, direccion, whatsapp))
                     db.commit()
-                    st.warning(f"CLIENTE ACTUALIZADO: Los datos de {nom} han sido refrescados.")
+                    st.info("Datos de cliente frecuente actualizados.")
+
+                # ESTRATEGIA DE MARKETING EN WHATSAPP
+                # Mensaje agradable y vendedor
+                mensaje_mkt = (
+                    f"¡Hola {nombre}! ✨ Bienvenido a la familia *Tropiexpress*. "
+                    f"Es un placer saludarte. 🛒\n\n"
+                    f"Como eres especial para nosotros, te hemos asignado: *{promo}*. 🎁\n\n"
+                    f"Tu pedido será enviado a: _{direccion}_. "
+                    f"¡Gracias por elegirnos y hacernos parte de tu día!"
+                )
                 
-                # Link de Bienvenida
-                link = f"https://wa.me/57{tel}?text=Hola%20{nom},%20tu%20registro%20en%20Tropiexpress%20está%20listo!"
-                st.markdown(f"[📲 Enviar WhatsApp a {nom}]({link})")
+                # Codificar enlace
+                link_wa = f"https://wa.me/57{whatsapp}?text={mensaje_mkt.replace(' ', '%20').replace('\n', '%0A')}"
+                st.markdown(f"### [📲 ENVIAR PROMOCIÓN POR WHATSAPP]({link_wa})")
 
 with tab2:
-    if st.button("🔄 Actualizar Tabla"):
-        df = pd.read_sql_query("SELECT * FROM clientes", db)
-        st.dataframe(df, use_container_width=True)
+    st.subheader("Tu Comunidad de Clientes")
+    df = pd.read_sql_query("SELECT * FROM clientes", db)
+    st.dataframe(df, use_container_width=True)
+    
+    if not df.empty:
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Descargar Base para Campañas", data=csv, file_name="mkt_tropiexpress.csv")
