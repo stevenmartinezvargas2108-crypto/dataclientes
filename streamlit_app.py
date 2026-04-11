@@ -3,14 +3,12 @@ import google.generativeai as genai
 import PIL.Image
 import json
 import urllib.parse
-import os
+import re
 
 # --- 1. CONFIGURACIÓN DE SEGURIDAD (API KEY) ---
-# Intenta obtener la clave de los Secrets de Streamlit (GitHub) o localmente
 try:
     API_KEY = st.secrets["GEN_API_KEY"]
 except Exception:
-    # Si trabajas local, asegúrate de tenerla en una variable de entorno o búscala aquí
     API_KEY = "AIzaSyD60MZOaP71Qt_LNSmbVjRI5tjazT-sIiQ" 
 
 genai.configure(api_key=API_KEY)
@@ -24,38 +22,46 @@ if 'datos' not in st.session_state:
 # --- 3. LÓGICA DE INTELIGENCIA ARTIFICIAL ---
 def analizar_pedido_con_gemini(imagen):
     """Envía la imagen a Gemini para extraer datos estructurados."""
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # Se utiliza 'gemini-1.5-flash-latest' para mayor compatibilidad
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
     
-    # Prompt optimizado para evitar errores en "últimas líneas" o datos basura
     prompt = """
-    Analiza esta nota de pedido de un supermercado. 
+    Analiza esta nota de pedido. 
     Extrae con precisión:
-    1. Nombre del cliente.
-    2. Teléfono de contacto (10 dígitos que empiezan por 3).
-    3. Dirección de entrega completa.
+    1. Nombre del cliente (si no existe, pon "No especificado").
+    2. Teléfono de contacto (solo los 10 dígitos).
+    3. Dirección de entrega completa (incluyendo notas como 'primer piso').
     
-    Ignora cualquier texto que no sea relevante para estos tres campos.
-    Responde estrictamente en formato JSON:
+    Responde estrictamente en formato JSON válido:
     {"nombre": "...", "tel": "...", "dir": "..."}
     """
     
     try:
+        # Generar contenido
         response = model.generate_content([prompt, imagen])
-        # Limpieza por si la IA devuelve bloques de código markdown
-        json_str = response.text.replace('json', '').replace('', '').strip()
-        return json.loads(json_str)
+        
+        # Limpieza robusta del JSON usando Regex
+        texto_respuesta = response.text
+        match = re.search(r'\{.*\}', texto_respuesta, re.DOTALL)
+        
+        if match:
+            return json.loads(match.group())
+        else:
+            st.error("La IA no devolvió un formato JSON válido.")
+            return None
+            
     except Exception as e:
         st.error(f"Error en la IA: {e}")
         return None
 
-# --- 4. FUNCIÓN DE VOZ (LECTURA) ---
+# --- 4. FUNCIÓN DE VOZ ---
 def sintetizar_voz(texto):
-    """Usa la API de voz del navegador para leer el texto."""
+    """Usa la API de voz del navegador."""
     if texto:
         componente_voz = f"""
         <script>
         var msg = new SpeechSynthesisUtterance('{texto}');
-        msg.lang = 'es-CO'; // Español de Colombia
+        msg.lang = 'es-CO';
         msg.rate = 1;
         window.speechSynthesis.speak(msg);
         </script>
@@ -64,7 +70,7 @@ def sintetizar_voz(texto):
 
 # --- 5. INTERFAZ DE USUARIO ---
 st.title("🛒 Tropiexpress Ultra-Extract")
-st.markdown("### Automatización de Pedidos con IA de Google")
+st.markdown("### Automatización de Pedidos con Gemini 1.5 Flash")
 
 archivo = st.file_uploader("📷 Sube la foto del pedido", type=['jpg', 'jpeg', 'png'])
 
@@ -73,7 +79,7 @@ if archivo:
     st.image(img, caption="Documento cargado", width=350)
 
     if st.button("🚀 EXTRAER DATOS CON IA"):
-        with st.spinner("Gemini analizando el pedido..."):
+        with st.spinner("Analizando documento..."):
             resultado = analizar_pedido_con_gemini(img)
             if resultado:
                 st.session_state['datos'] = {
@@ -81,7 +87,7 @@ if archivo:
                     'tel': resultado.get('tel', ''),
                     'dir': resultado.get('dir', '').title()
                 }
-                st.success("¡Datos extraídos con éxito!")
+                st.success("¡Datos extraídos!")
 
 st.divider()
 
@@ -100,25 +106,25 @@ with st.form("confirmacion_datos"):
 
     btn_guardar = st.form_submit_button("✅ Guardar y Generar Enlace")
 
-# --- 7. BOTÓN DE VOZ Y ACCIONES ---
-col_voz, col_wa = st.columns(2)
-
-with col_voz:
-    if st.button("🔊 Escuchar Resumen"):
-        resumen = f"Pedido para {nombre_f}. Dirección: {dir_f}. Celular: {tel_f}."
-        sintetizar_voz(resumen)
+# --- 7. ACCIONES ---
+if st.button("🔊 Escuchar Resumen"):
+    resumen = f"Pedido para {nombre_f}. Dirección: {dir_f}. Celular: {tel_f}."
+    sintetizar_voz(resumen)
 
 if btn_guardar:
-    if nombre_f and tel_f:
-        # Limpieza de teléfono para el link
+    if tel_f:
+        # Limpieza de teléfono para el link (solo números)
         tel_limpio = "".join(filter(str.isdigit, tel_f))
         
+        # Si el número no tiene el prefijo de país, se asume Colombia (+57)
+        whatsapp_num = f"57{tel_limpio}" if len(tel_limpio) == 10 else tel_limpio
+        
         texto_wa = f"Hola {nombre_f}, bienvenido a Tropiexpress 🛒.\n\n" \
-                   f"Confirmamos tu pedido. Beneficio aplicado: {promo}.\n" \
+                   f"Confirmamos tu pedido. Beneficio: {promo}.\n" \
                    f"📍 Entrega: {dir_f}\n\n" \
                    f"¿Los datos son correctos?"
         
-        link_wa = f"https://wa.me/57{tel_limpio}?text={urllib.parse.quote(texto_wa)}"
+        link_wa = f"https://wa.me/{whatsapp_num}?text={urllib.parse.quote(texto_wa)}"
         
         st.markdown(f"""
             <a href="{link_wa}" target="_blank" style="text-decoration: none;">
@@ -128,4 +134,4 @@ if btn_guardar:
             </a>
         """, unsafe_allow_html=True)
     else:
-        st.warning("Asegúrate de que el nombre y el teléfono estén presentes.")
+        st.warning("Por favor, verifica el número de teléfono.")
