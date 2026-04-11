@@ -9,123 +9,97 @@ import re
 import urllib.parse
 from datetime import datetime
 
-# --- 1. CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Tropiexpress Pro", page_icon="🛒", layout="centered")
-st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
+# --- CONFIGURACIÓN E INICIALIZACIÓN ---
+st.set_page_config(page_title="Tropiexpress Pro", page_icon="🛒")
 
-# --- 2. BASE DE DATOS (Fidelización) ---
+# Inicializar estados de sesión para evitar errores de refresco
+if 'n_final' not in st.session_state: st.session_state['n_final'] = ""
+if 't_final' not in st.session_state: st.session_state['t_final'] = ""
+
 def init_db():
-    conn = sqlite3.connect('tropiexpress_final_v11.db', check_same_thread=False)
+    conn = sqlite3.connect('tropiexpress_v11.db', check_same_thread=False)
     conn.execute('''CREATE TABLE IF NOT EXISTS clientes 
                  (id INTEGER PRIMARY KEY, fecha TEXT, nombre TEXT, direccion TEXT, telefono TEXT UNIQUE)''')
     return conn
 
-# --- 3. MOTOR IA (Carga optimizada) ---
 @st.cache_resource
 def load_ocr():
+    # Cargamos el modelo una sola vez para ahorrar RAM
     return easyocr.Reader(['es'], gpu=False)
 
-# --- 4. FUNCIÓN DE LIMPIEZA DE IMAGEN (La clave de la lectura) ---
-def optimizar_para_ocr(image_pil):
-    # Convertir a formato OpenCV
+# --- MEJORA DE LECTURA (Versión Ligera) ---
+def optimizar_imagen(image_pil):
+    # Redimensionar si la imagen es muy grande para evitar caídas por RAM
     img_np = np.array(image_pil.convert('RGB'))
+    height, width = img_np.shape[:2]
+    if max(height, width) > 1500:
+        scale = 1500 / max(height, width)
+        img_np = cv2.resize(img_np, (int(width * scale), int(height * scale)))
+    
     gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-    
-    # Técnica de blanqueo: elimina sombras y resalta tinta
-    dilated = cv2.dilate(gray, np.ones((7,7), np.uint8))
-    bg_img = cv2.medianBlur(dilated, 21)
-    diff_img = 255 - cv2.absdiff(gray, bg_img)
-    norm_img = cv2.normalize(diff_img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
-    
-    # Umbralizado para texto puro
-    _, final_thr = cv2.threshold(norm_img, 220, 255, cv2.THRESH_BINARY)
-    return final_thr
+    # Limpieza de ruido y sombras
+    smooth = cv2.GaussianBlur(gray, (5, 5), 0)
+    thresh = cv2.adaptiveThreshold(smooth, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    return thresh
 
 db = init_db()
 
-# --- 5. INTERFAZ DE USUARIO ---
-st.title("🚀 Tropiexpress: Registro & Marketing")
-st.info("Sube o toma la foto del pedido para extraer los datos.")
+# --- INTERFAZ ---
+st.title("🛒 Registro Tropiexpress")
+metodo = st.radio("Entrada:", ["Cámara 📸", "Galería 📁"], horizontal=True)
 
-# Selector de entrada para evitar conflictos de hardware
-metodo = st.radio("Método de entrada:", ["Subir de Galería 📁", "Usar Cámara 📸"], horizontal=True)
-
-archivo = st.camera_input("Capturar") if metodo == "Usar Cámara 📸" else st.file_uploader("Elegir imagen", type=['jpg', 'jpeg', 'png'])
+archivo = st.camera_input("Foto") if metodo == "Cámara 📸" else st.file_uploader("Subir", type=['jpg', 'png'])
 
 if archivo:
-    try:
-        img_pil = Image.open(archivo)
-        # Procesar imagen con el nuevo motor de limpieza
-        img_limpia = optimizar_para_ocr(img_pil)
-        
-        st.image(img_limpia, caption="Vista optimizada para el escáner", width=350)
+    img_pil = Image.open(archivo)
+    img_ready = optimizar_imagen(img_pil)
+    st.image(img_ready, caption="Vista para IA", width=300)
 
-        if st.button("🔍 Escanear Datos con IA"):
-            with st.spinner("Leyendo manuscrito..."):
-                reader = load_ocr()
-                # detail=0 y paragraph=True mejoran la comprensión de nombres
-                resultados = reader.readtext(img_limpia, detail=0, paragraph=True)
+    if st.button("🔍 Escanear Datos"):
+        with st.spinner("Analizando..."):
+            reader = load_ocr()
+            # Usamos detail=0 para reducir el uso de memoria en el procesamiento
+            res = reader.readtext(img_ready, detail=0, paragraph=True)
+            
+            if res:
+                texto = " ".join(res).lower()
+                # Filtrar teléfono de 10 dígitos (Colombia)
+                numeros = re.sub(r'\D', '', texto)
+                match_tel = re.search(r'3\d{9}', numeros)
                 
-                if resultados:
-                    texto_completo = " ".join(resultados).lower()
-                    
-                    # Extraer teléfono (10 dígitos que empiecen por 3 en Colombia)
-                    solo_nums = re.sub(r'\D', '', texto_completo)
-                    match_tel = re.search(r'3\d{9}', solo_nums)
-                    
-                    # Extraer nombre (primera línea o después de 'Nombre:')
-                    nombre_sug = resultados[0]
-                    for linea in resultados:
-                        if "nombre" in linea.lower():
-                            nombre_sug = linea.lower().replace("nombre", "").replace(":", "").replace("=", "").strip()
-                            break
-                    
-                    st.session_state['n_final'] = nombre_sug.capitalize()
-                    st.session_state['t_final'] = match_tel.group() if match_tel else ""
-                    st.success("¡Datos extraídos con éxito!")
-
-    except Exception as e:
-        st.error(f"Error al procesar la imagen: {e}")
+                # Intentar detectar nombre
+                nombre_det = res[0]
+                for l in res:
+                    if "nombre" in l.lower():
+                        nombre_det = l.lower().replace("nombre", "").replace(":", "").strip()
+                
+                st.session_state['n_final'] = nombre_det.capitalize()
+                st.session_state['t_final'] = match_tel.group() if match_tel else ""
+                st.success("¡Lectura completa!")
 
 st.divider()
 
-# --- 6. FORMULARIO Y ESTRATEGIA DE MARKETING ---
-with st.form("registro_mkt"):
-    st.subheader("Confirmar y Fidelizar")
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        nombre = st.text_input("Nombre del Cliente", value=st.session_state.get('n_final', ""))
-        whatsapp = st.text_input("WhatsApp (10 dígitos)", value=st.session_state.get('t_final', ""))
-    with c2:
-        direccion = st.text_input("Dirección de Entrega")
-        promo = st.selectbox("Regalo de Bienvenida", [
-            "Envío GRATIS hoy mismo 🚚",
-            "10% de descuento en esta compra 💸",
-            "Bono de $5.000 para mañana 🎁"
-        ])
+# --- FORMULARIO FINAL ---
+with st.form("f_registro"):
+    st.subheader("Confirmación y Promo")
+    nombre = st.text_input("Nombre", value=st.session_state['n_final'])
+    whatsapp = st.text_input("WhatsApp", value=st.session_state['t_final'])
+    direccion = st.text_input("Dirección")
+    promo = st.selectbox("Estrategia", ["Envío Gratis hoy", "10% Descuento"])
 
-    if st.form_submit_button("✅ Guardar y Enviar Bienvenida"):
+    if st.form_submit_button("✅ Guardar y Enviar Marketing"):
         if nombre and whatsapp:
             try:
-                fecha_hoy = datetime.now().strftime("%d/%m/%Y")
+                fecha = datetime.now().strftime("%d/%m/%Y")
                 db.execute("INSERT OR REPLACE INTO clientes (fecha, nombre, direccion, telefono) VALUES (?,?,?,?)", 
-                           (fecha_hoy, nombre, direccion, whatsapp))
+                           (fecha, nombre, direccion, whatsapp))
                 db.commit()
                 
-                # Mensaje de marketing optimizado
-                mensaje = (f"¡Hola {nombre}! ✨ Bienvenido a Tropiexpress. "
-                           f"Es un gusto atenderte. Por tu registro, te activamos: {promo}. "
-                           f"Enviaremos tu pedido a: {direccion}. ¡Gracias por preferirnos!")
-                
-                link_wa = f"https://wa.me/57{whatsapp}?text={urllib.parse.quote(mensaje)}"
-                
-                st.success(f"¡{nombre} guardado!")
-                st.markdown(f"### [📲 CLICK AQUÍ PARA WHATSAPP]({link_wa})")
+                msg = f"¡Hola {nombre}! Bienvenido a Tropiexpress. Tu beneficio: {promo}. Pedido a: {direccion}."
+                link = f"https://wa.me/57{whatsapp}?text={urllib.parse.quote(msg)}"
+                st.markdown(f"[📲 ENVIAR WHATSAPP]({link})")
             except Exception as e:
-                st.error(f"No se pudo guardar: {e}")
+                st.error(f"Error: {e}")
 
-# --- 7. VISUALIZACIÓN DE BASE DE DATOS ---
-if st.checkbox("Ver listado de clientes"):
-    df = pd.read_sql_query("SELECT * FROM clientes ORDER BY id DESC", db)
-    st.dataframe(df, use_container_width=True)
+if st.checkbox("Ver Base de Datos"):
+    st.dataframe(pd.read_sql_query("SELECT * FROM clientes", db))
