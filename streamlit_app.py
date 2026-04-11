@@ -8,10 +8,26 @@ from datetime import datetime
 from io import BytesIO
 import re
 
-# --- CONFIGURACIÓN DE PÁGINA ---
+# --- 1. INMUNIZACIÓN CONTRA TRADUCTOR (CRÍTICO) ---
+# Esto evita que Google Chrome intente traducir la página y rompa el código visual
 st.set_page_config(page_title="DataClientes Tropiexpress", page_icon="🛒", layout="centered")
 
-# --- BASE DE DATOS ---
+st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
+st.markdown("""
+    <style>
+    /* Forzar que no se traduzca el contenido */
+    .stApp {
+        unicode-bidi: isolate;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 2. INICIALIZACIÓN DE VARIABLES DE SESIÓN ---
+if 'nombre_ocr' not in st.session_state: st.session_state.nombre_ocr = ""
+if 'dir_ocr' not in st.session_state: st.session_state.dir_ocr = ""
+if 'tel_ocr' not in st.session_state: st.session_state.tel_ocr = ""
+
+# --- 3. BASE DE DATOS ---
 @st.cache_resource
 def get_db_connection():
     conn = sqlite3.connect('tropiexpress_data.db', check_same_thread=False)
@@ -21,27 +37,21 @@ def get_db_connection():
 
 conn = get_db_connection()
 
-# --- USUARIOS ---
+# --- 4. CARGA DE OCR ---
+@st.cache_resource
+def get_ocr_reader():
+    return easyocr.Reader(['es'], gpu=False)
+
+reader = get_ocr_reader()
+
+# --- 5. USUARIOS ---
 USUARIOS_AUTORIZADOS = {
     "Sede_Principal": "tropi123",
     "Sede_Sur": "sur456",
     "Admin": "master2026"
 }
 
-# --- CARGA DE OCR ---
-@st.cache_resource
-def get_ocr_reader():
-    # 'es' para español, gpu=False para compatibilidad en servidores sin GPU
-    return easyocr.Reader(['es'], gpu=False)
-
-reader = get_ocr_reader()
-
-# --- INICIALIZACIÓN DE VARIABLES DE ESTADO (Para edición de OCR) ---
-if 'nombre_ocr' not in st.session_state: st.session_state.nombre_ocr = ""
-if 'dir_ocr' not in st.session_state: st.session_state.dir_ocr = ""
-if 'tel_ocr' not in st.session_state: st.session_state.tel_ocr = ""
-
-# --- LÓGICA DE ACCESO ---
+# --- 6. LÓGICA DE ACCESO ---
 if 'punto_venta' not in st.session_state:
     st.title("🛒 Acceso Tropiexpress")
     with st.form("login"):
@@ -57,14 +67,14 @@ else:
     # --- APP PRINCIPAL ---
     st.sidebar.title(f"📍 {st.session_state['punto_venta']}")
     if st.sidebar.button("Cerrar Sesión"):
-        del st.session_state['punto_venta']
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
         st.rerun()
 
     st.title("📱 Registro de Clientes")
     tab1, tab2 = st.tabs(["🆕 Registro", "📊 Base de Datos"])
 
     with tab1:
-        # 1. Cambiado a file_uploader para permitir Galería y Cámara
         archivo = st.file_uploader("Subir foto de datos (Cámara o Galería)", type=['png', 'jpg', 'jpeg'])
         
         if archivo:
@@ -73,27 +83,21 @@ else:
             
             if st.button("🔍 Extraer Datos de la Imagen", use_container_width=True):
                 with st.spinner("Leyendo manuscrito..."):
-                    # paragraph=True ayuda a agrupar líneas de dirección
                     res = reader.readtext(np.array(img), paragraph=False)
                     lineas = [r[1] for r in res]
                     
                     if lineas:
-                        # Intento de asignación inteligente
-                        st.session_state.nombre_ocr = lineas[0] # Primera línea suele ser nombre
-                        
+                        st.session_state.nombre_ocr = lineas[0]
                         full_text = " ".join(lineas)
-                        # Buscar teléfono (10 dígitos seguidos)
                         tel_match = re.search(r'\d{10}', full_text.replace(" ", "").replace("-", ""))
                         if tel_match:
                             st.session_state.tel_ocr = tel_match.group()
                         
-                        # El resto se intenta poner como dirección
                         if len(lineas) > 1:
-                            st.session_state.dir_ocr = " ".join(lineas[1:]) if not tel_match else " ".join([l for l in lineas[1:] if not any(c.isdigit() for c in l)])
+                            st.session_state.dir_ocr = " ".join(lineas[1:])
 
-        # --- FORMULARIO EDITABLE ---
         st.write("---")
-        st.subheader("Confirmar Datos")
+        st.subheader("Confirmar y Editar Datos")
         with st.form("form_reg", clear_on_submit=True):
             nombre = st.text_input("Nombre del Cliente", value=st.session_state.nombre_ocr)
             direccion = st.text_input("Dirección", value=st.session_state.dir_ocr)
@@ -109,24 +113,19 @@ else:
                         conn.commit()
                         
                         st.success(f"✅ ¡{nombre} registrado!")
-                        
-                        # Limpiar campos de la sesión
                         st.session_state.nombre_ocr = ""
                         st.session_state.dir_ocr = ""
                         st.session_state.tel_ocr = ""
                         
-                        # Enlace de WhatsApp
                         msg = (f"Hola {nombre}, te damos la bienvenida a supermercados Tropiexpress. "
-                               "Es un placer que hagas parte de nuestra familia. "
-                               "Agreganos a tus contactos para conocer nuestras ofertas.")
-                        
+                               "Es un placer que hagas parte de nuestra familia.")
                         whatsapp_link = f"https://wa.me/{telefono}?text={msg.replace(' ', '%20')}"
-                        st.markdown(f"### [📲 Haz clic aquí para enviar WhatsApp a {nombre}]({whatsapp_link})")
+                        st.markdown(f"### [📲 Haz clic para enviar WhatsApp]({whatsapp_link})")
                         
                     except sqlite3.IntegrityError:
-                        st.warning("⚠️ Este número de teléfono ya está registrado.")
+                        st.warning("⚠️ Este cliente ya existe.")
                 else:
-                    st.error("Faltan datos obligatorios (Nombre y Teléfono).")
+                    st.error("Nombre y Teléfono son obligatorios.")
 
     with tab2:
         st.subheader("Registros en Sistema")
@@ -140,12 +139,5 @@ else:
         if not df.empty:
             output = BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False, sheet_name='Clientes')
-            
-            st.download_button(
-                label="📥 Descargar Base de Datos (Excel)",
-                data=output.getvalue(),
-                file_name=f"clientes_{st.session_state['punto_venta']}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+                df.to_excel(writer, index=False)
+            st.download_button("📥 Descargar Excel", output.getvalue(), "clientes_tropiexpress.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
