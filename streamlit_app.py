@@ -9,91 +9,99 @@ import re
 import urllib.parse
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Tropiexpress Master", page_icon="🛒")
+st.set_page_config(page_title="Tropiexpress Ultra-Extract", page_icon="🛒")
 
-if 'temp_datos' not in st.session_state:
-    st.session_state['temp_datos'] = {'n': '', 't': '', 'd': ''}
+if 'datos_ia' not in st.session_state:
+    st.session_state['datos_ia'] = {'nombre': '', 'tel': '', 'dir': ''}
 
 @st.cache_resource
-def cargar_lector():
+def load_reader():
     return easyocr.Reader(['es'], gpu=False)
 
-def limpiar_imagen_top(image_pil):
-    # Reducir para que el servidor no se cuelgue por tiempo
+def preprocesamiento_avanzado(image_pil):
+    # 1. Convertir y Redimensionar (Vital para velocidad y RAM)
     img_np = np.array(image_pil.convert('RGB'))
-    img_cv = cv2.resize(img_np, (1000, int(img_np.shape[0] * (1000 / img_np.shape[1]))))
+    img_cv = cv2.resize(img_np, (1200, int(img_np.shape[0] * (1200 / img_np.shape[1]))))
+    
+    # 2. Eliminar ruido y sombras (Blanqueo total)
     gray = cv2.cvtColor(img_cv, cv2.COLOR_RGB2GRAY)
-    # Filtro para eliminar el gris del papel y resaltar la tinta
-    img_final = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-    return img_final
+    # Suavizado para unir trazos de lapicero rotos
+    smooth = cv2.bilateralFilter(gray, 9, 75, 75)
+    # Umbralizado adaptativo (Convierte el papel en blanco puro y el texto en negro sólido)
+    thresh = cv2.adaptiveThreshold(smooth, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 8)
+    
+    # 3. Operación morfológica para engrosar un poco la letra manuscrita
+    kernel = np.ones((2,2), np.uint8)
+    processed = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    return processed
 
 # --- INTERFAZ ---
-st.title("🛒 Tropiexpress: Extractor Inteligente")
+st.title("🛒 Tropiexpress Master Scanner")
 
-archivo = st.file_uploader("Sube la foto del pedido", type=['jpg', 'jpeg', 'png'])
+archivo = st.file_uploader("Sube el pedido manuscrito", type=['jpg', 'jpeg', 'png'])
 
 if archivo:
     img_pil = Image.open(archivo)
-    img_procesada = limpiar_imagen_top(img_pil)
-    st.image(img_procesada, caption="Imagen optimizada", width=350)
+    img_final = preprocesamiento_avanzado(img_pil)
+    st.image(img_final, caption="Imagen Optimizada para IA", width=400)
 
-    if st.button("🚀 EXTRAER DATOS COMO EXPERTO"):
-        with st.spinner("Analizando información..."):
-            reader = cargar_lector()
-            # Leemos con 'paragraph=True' para que no rompa las direcciones largas
-            resultados = reader.readtext(img_procesada, detail=0, paragraph=True)
+    if st.button("🚀 EXTRAER CON INTELIGENCIA ARTIFICIAL"):
+        with st.spinner("Pensando como un humano..."):
+            reader = load_reader()
+            # Leemos con 'paragraph=True' para mantener el contexto de la dirección
+            resultados = reader.readtext(img_final, detail=0, paragraph=True)
             
             if resultados:
-                texto_sucio = " ".join(resultados).replace("\n", " ")
+                # Unimos todo para buscar patrones globales
+                texto_completo = " ".join(resultados).lower()
                 
-                # 1. EXTRAER TELÉFONO (Busca 10 números que inicien con 3)
-                numeros = re.sub(r'\D', '', texto_sucio)
-                tel_match = re.search(r'3\d{9}', numeros)
+                # --- MOTOR DE DISCRIMINACIÓN "TIPO GEMINI" ---
                 
-                # 2. EXTRAER DIRECCIÓN (Busca palabras clave de vías)
-                patron_dir = re.compile(r'(calle|cll|cra|carrera|transversal|trv|diagonal|diag|#|nro|no|casa|apto|piso|interior|sector|manzana|mz)', re.I)
-                direccion = ""
+                # A. Buscar Teléfono (Patrón de 10 dígitos que empiece por 3)
+                solo_numeros = re.sub(r'\D', '', texto_completo)
+                match_tel = re.search(r'3\d{9}', solo_numeros)
+                
+                # B. Buscar Dirección (Buscando palabras de calles colombianas)
+                patrones_dir = ["calle", "cll", "cra", "carrera", "trans", "trv", "diag", "#", "no", "apto", "piso", "casa", "mz", "sector"]
+                dir_sug = ""
                 for bloque in resultados:
-                    if patron_dir.search(bloque):
-                        direccion = bloque.strip()
-                        break
+                    if any(p in bloque.lower() for p in patrones_dir):
+                        # Si el bloque tiene un número y una palabra clave, es la dirección
+                        if any(char.isdigit() for char in bloque):
+                            dir_sug = bloque.strip()
+                            break
                 
-                # 3. EXTRAER NOMBRE (Suele ser el primer bloque que no es dirección)
-                nombre = resultados[0]
+                # C. Buscar Nombre (El primer bloque que no sea dirección y sea texto)
+                nom_sug = resultados[0]
                 for bloque in resultados:
-                    if "nombre" in bloque.lower():
-                        nombre = bloque.lower().replace("nombre", "").replace(":", "").replace("=", "").strip()
-                        break
-                    elif len(bloque) > 3 and not patron_dir.search(bloque) and not any(char.isdigit() for char in bloque[:3]):
-                        nombre = bloque
+                    # Si no es dirección y tiene más de 3 letras, probablemente es el nombre
+                    if not any(p in bloque.lower() for p in patrones_dir) and len(bloque) > 5:
+                        nom_sug = bloque
                         break
 
-                st.session_state['temp_datos'] = {
-                    'n': nombre.title(),
-                    't': tel_match.group() if tel_match else "",
-                    'd': direccion.title()
+                st.session_state['datos_ia'] = {
+                    'nombre': nom_sug.title(),
+                    'tel': match_tel.group() if match_tel else "",
+                    'dir': dir_sug.title()
                 }
-                st.success("¡Datos capturados!")
+                st.success("¡Extracción finalizada!")
 
 st.divider()
 
-# --- FORMULARIO FINAL ---
-with st.form("registro_tropi"):
+# --- FORMULARIO DE VERIFICACIÓN ---
+with st.form("confirmacion_tropi"):
+    st.subheader("Datos del Cliente")
     c1, c2 = st.columns(2)
     with c1:
-        nom_f = st.text_input("Nombre", value=st.session_state['temp_datos']['n'])
-        tel_f = st.text_input("WhatsApp", value=st.session_state['temp_datos']['t'])
+        nombre_f = st.text_input("Nombre", value=st.session_state['datos_ia']['nombre'])
+        tel_f = st.text_input("WhatsApp", value=st.session_state['datos_ia']['tel'])
     with c2:
-        dir_f = st.text_input("Dirección", value=st.session_state['temp_datos']['d'])
-        promo = st.selectbox("Regalo", ["Envío Gratis 🚚", "Bono $5.000 🎁"])
+        dir_f = st.text_input("Dirección", value=st.session_state['datos_ia']['dir'])
+        promo = st.selectbox("Estrategia", ["Envío Gratis 🚚", "Descuento 10% 💸"])
 
     if st.form_submit_button("✅ GUARDAR Y ENVIAR"):
-        if nom_f and tel_f:
-            conn = sqlite3.connect('tropiexpress_data.db')
-            conn.execute("INSERT OR REPLACE INTO clientes (nombre, direccion, telefono) VALUES (?,?,?)", (nom_f, dir_f, tel_f))
-            conn.commit()
-            
-            # Enlace de WhatsApp sin errores de sintaxis
-            txt = f"Hola {nom_f}, bienvenido a Tropiexpress. Tu promo: {promo}. Pedido para: {dir_f}"
-            link = f"https://wa.me/57{tel_f}?text={urllib.parse.quote(txt)}"
-            st.markdown(f"### [📲 CLICK PARA WHATSAPP]({link})")
+        if nombre_f and tel_f:
+            # Guardado en DB y enlace de WhatsApp
+            txt_mkt = f"Hola {nombre_f}, bienvenido a Tropiexpress. Promo: {promo}. Destino: {dir_f}"
+            link = f"https://wa.me/57{tel_f}?text={urllib.parse.quote(txt_mkt)}"
+            st.markdown(f"### [📲 CLICK AQUÍ PARA WHATSAPP]({link})")
