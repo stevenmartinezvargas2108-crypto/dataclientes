@@ -1,98 +1,131 @@
 import streamlit as st
-import sqlite3
-import pandas as pd
-import easyocr
-import numpy as np
-import cv2
-from PIL import Image
-import re
+import google.generativeai as genai
+import PIL.Image
+import json
 import urllib.parse
+import os
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Tropiexpress Ultra-Extract", page_icon="🛒")
+# --- 1. CONFIGURACIÓN DE SEGURIDAD (API KEY) ---
+# Intenta obtener la clave de los Secrets de Streamlit (GitHub) o localmente
+try:
+    API_KEY = st.secrets["GEN_API_KEY"]
+except Exception:
+    # Si trabajas local, asegúrate de tenerla en una variable de entorno o búscala aquí
+    API_KEY = "AIzaSyBauf8AlM9GDlyHAkRBKDvNClGzgSOrQMk" 
+
+genai.configure(api_key=API_KEY)
+
+# --- 2. CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Tropiexpress AI", page_icon="🛒", layout="centered")
 
 if 'datos' not in st.session_state:
     st.session_state['datos'] = {'nombre': '', 'tel': '', 'dir': ''}
 
-@st.cache_resource
-def load_ocr():
-    return easyocr.Reader(['es'], gpu=False)
-
-def limpiar_inteligente(image_pil):
-    # 1. Redimensionar a un tamaño óptimo (ni muy grande para no caerse, ni muy chico para no perder detalle)
-    img_np = np.array(image_pil.convert('RGB'))
-    img_cv = cv2.resize(img_np, (1200, int(img_np.shape[0] * (1200 / img_np.shape[1]))))
+# --- 3. LÓGICA DE INTELIGENCIA ARTIFICIAL ---
+def analizar_pedido_con_gemini(imagen):
+    """Envía la imagen a Gemini para extraer datos estructurados."""
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
-    # 2. Convertir a escala de grises
-    gray = cv2.cvtColor(img_cv, cv2.COLOR_RGB2GRAY)
+    # Prompt optimizado para evitar errores en "últimas líneas" o datos basura
+    prompt = """
+    Analiza esta nota de pedido de un supermercado. 
+    Extrae con precisión:
+    1. Nombre del cliente.
+    2. Teléfono de contacto (10 dígitos que empiezan por 3).
+    3. Dirección de entrega completa.
     
-    # 3. EL SECRETO: Filtro Adaptativo de Gauss
-    # Esto elimina las sombras del papel pero mantiene la nitidez del lapicero
-    processed = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 12)
+    Ignora cualquier texto que no sea relevante para estos tres campos.
+    Responde estrictamente en formato JSON:
+    {"nombre": "...", "tel": "...", "dir": "..."}
+    """
     
-    return processed
+    try:
+        response = model.generate_content([prompt, imagen])
+        # Limpieza por si la IA devuelve bloques de código markdown
+        json_str = response.text.replace('json', '').replace('', '').strip()
+        return json.loads(json_str)
+    except Exception as e:
+        st.error(f"Error en la IA: {e}")
+        return None
 
-# --- INTERFAZ ---
-st.title("🚀 Tropiexpress: Extracción de Alta Precisión")
+# --- 4. FUNCIÓN DE VOZ (LECTURA) ---
+def sintetizar_voz(texto):
+    """Usa la API de voz del navegador para leer el texto."""
+    if texto:
+        componente_voz = f"""
+        <script>
+        var msg = new SpeechSynthesisUtterance('{texto}');
+        msg.lang = 'es-CO'; // Español de Colombia
+        msg.rate = 1;
+        window.speechSynthesis.speak(msg);
+        </script>
+        """
+        st.components.v1.html(componente_voz, height=0)
 
-archivo = st.file_uploader("Sube la foto del pedido", type=['jpg', 'jpeg', 'png'])
+# --- 5. INTERFAZ DE USUARIO ---
+st.title("🛒 Tropiexpress Ultra-Extract")
+st.markdown("### Automatización de Pedidos con IA de Google")
+
+archivo = st.file_uploader("📷 Sube la foto del pedido", type=['jpg', 'jpeg', 'png'])
 
 if archivo:
-    img_pil = Image.open(archivo)
-    img_final = limpiar_inteligente(img_pil)
-    st.image(img_final, caption="Imagen Optimizada para Lectura", width=400)
+    img = PIL.Image.open(archivo)
+    st.image(img, caption="Documento cargado", width=350)
 
-    if st.button("🔍 EXTRAER DATOS AHORA"):
-        with st.spinner("Procesando con motor de alta precisión..."):
-            reader = load_ocr()
-            # Usamos detail=1 para obtener las posiciones y reordenar el texto si es necesario
-            res = reader.readtext(img_final, detail=0, paragraph=True)
-            
-            if res:
-                full_text = " ".join(res).lower()
-                
-                # --- MOTOR DE DISCRIMINACIÓN ---
-                # 1. Buscar Celular (10 dígitos que empiezan por 3)
-                nums_only = re.sub(r'\D', '', full_text)
-                tel_m = re.search(r'3\d{9}', nums_only)
-                
-                # 2. Buscar Dirección (Buscando patrones de calles/números)
-                patron_dir = re.compile(r'(calle|cll|cra|carrera|#|nro|no|apto|casa|piso|trans|diag)', re.I)
-                dir_s = ""
-                for linea in res:
-                    if patron_dir.search(linea) and any(c.isdigit() for c in linea):
-                        dir_s = linea.strip()
-                        break
-                
-                # 3. Buscar Nombre (Suele ser la línea que no es dirección ni teléfono)
-                nom_s = res[0]
-                for linea in res:
-                    if len(linea) > 5 and not patron_dir.search(linea) and not re.search(r'3\d{9}', linea):
-                        nom_s = linea.strip()
-                        break
-
+    if st.button("🚀 EXTRAER DATOS CON IA"):
+        with st.spinner("Gemini analizando el pedido..."):
+            resultado = analizar_pedido_con_gemini(img)
+            if resultado:
                 st.session_state['datos'] = {
-                    'nombre': nom_s.title(),
-                    'tel': tel_m.group() if tel_m else "",
-                    'dir': dir_s.title()
+                    'nombre': resultado.get('nombre', '').title(),
+                    'tel': resultado.get('tel', ''),
+                    'dir': resultado.get('dir', '').title()
                 }
-                st.success("¡Datos extraídos con precisión!")
+                st.success("¡Datos extraídos con éxito!")
 
 st.divider()
 
-# --- FORMULARIO DE CONFIRMACIÓN ---
-with st.form("registro_tropi"):
+# --- 6. FORMULARIO DE REVISIÓN ---
+with st.form("confirmacion_datos"):
+    st.subheader("📝 Confirmación de Datos")
     col1, col2 = st.columns(2)
+    
     with col1:
-        n = st.text_input("Nombre", value=st.session_state['datos']['nombre'])
-        t = st.text_input("WhatsApp", value=st.session_state['datos']['tel'])
+        nombre_f = st.text_input("Nombre Cliente", value=st.session_state['datos']['nombre'])
+        tel_f = st.text_input("Celular (10 dígitos)", value=st.session_state['datos']['tel'])
+    
     with col2:
-        d = st.text_input("Dirección", value=st.session_state['datos']['dir'])
-        promo = st.selectbox("Estrategia", ["Envío Gratis 🚚", "Bono $5.000 🎁"])
+        dir_f = st.text_input("Dirección", value=st.session_state['datos']['dir'])
+        promo = st.selectbox("Estrategia", ["Envío Gratis 🚚", "Bono $5.000 🎁", "Obsequio Sorpresa 🎀"])
 
-    if st.form_submit_button("✅ Guardar y Enviar"):
-        if n and t:
-            # Enlace de WhatsApp seguro
-            msg = f"Hola {n}, bienvenido a Tropiexpress. Promo: {promo}. Destino: {d}"
-            link = f"https://wa.me/57{t}?text={urllib.parse.quote(msg)}"
-            st.markdown(f"### [📲 CLICK PARA WHATSAPP]({link})")
+    btn_guardar = st.form_submit_button("✅ Guardar y Generar Enlace")
+
+# --- 7. BOTÓN DE VOZ Y ACCIONES ---
+col_voz, col_wa = st.columns(2)
+
+with col_voz:
+    if st.button("🔊 Escuchar Resumen"):
+        resumen = f"Pedido para {nombre_f}. Dirección: {dir_f}. Celular: {tel_f}."
+        sintetizar_voz(resumen)
+
+if btn_guardar:
+    if nombre_f and tel_f:
+        # Limpieza de teléfono para el link
+        tel_limpio = "".join(filter(str.isdigit, tel_f))
+        
+        texto_wa = f"Hola {nombre_f}, bienvenido a Tropiexpress 🛒.\n\n" \
+                   f"Confirmamos tu pedido. Beneficio aplicado: {promo}.\n" \
+                   f"📍 Entrega: {dir_f}\n\n" \
+                   f"¿Los datos son correctos?"
+        
+        link_wa = f"https://wa.me/57{tel_limpio}?text={urllib.parse.quote(texto_wa)}"
+        
+        st.markdown(f"""
+            <a href="{link_wa}" target="_blank" style="text-decoration: none;">
+                <div style="background-color: #25D366; color: white; padding: 15px; text-align: center; border-radius: 10px; font-weight: bold; font-size: 18px; margin-top: 10px;">
+                    📲 ABRIR WHATSAPP DEL CLIENTE
+                </div>
+            </a>
+        """, unsafe_allow_html=True)
+    else:
+        st.warning("Asegúrate de que el nombre y el teléfono estén presentes.")
