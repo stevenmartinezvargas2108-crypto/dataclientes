@@ -1,107 +1,95 @@
 import streamlit as st
-import sqlite3
-import pandas as pd
-import easyocr
-import numpy as np
 import cv2
-from PIL import Image
+import numpy as np
+import easyocr
 import re
 import urllib.parse
+from PIL import Image
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Tropiexpress Ultra-Extract", page_icon="🛒")
+st.set_page_config(page_title="Tropiexpress Ultra-Scanner", page_icon="🛒")
 
-if 'datos_ia' not in st.session_state:
-    st.session_state['datos_ia'] = {'nombre': '', 'tel': '', 'dir': ''}
+if 'mkt_data' not in st.session_state:
+    st.session_state['mkt_data'] = {'n': '', 't': '', 'd': ''}
 
 @st.cache_resource
-def load_reader():
+def get_reader():
     return easyocr.Reader(['es'], gpu=False)
 
-def preprocesamiento_avanzado(image_pil):
-    # 1. Convertir y Redimensionar (Vital para velocidad y RAM)
-    img_np = np.array(image_pil.convert('RGB'))
-    img_cv = cv2.resize(img_np, (1200, int(img_np.shape[0] * (1200 / img_np.shape[1]))))
+def procesar_imagen_quirurgica(image_pil):
+    # 1. Redimensionar para no colgar el servidor
+    img = np.array(image_pil.convert('RGB'))
+    img = cv2.resize(img, (1100, int(img.shape[0] * (1100 / img.shape[1]))))
     
-    # 2. Eliminar ruido y sombras (Blanqueo total)
-    gray = cv2.cvtColor(img_cv, cv2.COLOR_RGB2GRAY)
-    # Suavizado para unir trazos de lapicero rotos
-    smooth = cv2.bilateralFilter(gray, 9, 75, 75)
-    # Umbralizado adaptativo (Convierte el papel en blanco puro y el texto en negro sólido)
-    thresh = cv2.adaptiveThreshold(smooth, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 8)
+    # 2. Eliminar el ruido del papel (Blanqueo extremo)
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    # Filtro para resaltar el lapicero sobre el papel crema
+    rect_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
+    blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rect_kernel)
+    _, thresh = cv2.threshold(blackhat, 10, 255, cv2.THRESH_BINARY_INV)
     
-    # 3. Operación morfológica para engrosar un poco la letra manuscrita
-    kernel = np.ones((2,2), np.uint8)
-    processed = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-    return processed
+    return thresh
 
 # --- INTERFAZ ---
-st.title("🛒 Tropiexpress Master Scanner")
+st.title("🛒 Tropiexpress: Escáner Inteligente")
 
-archivo = st.file_uploader("Sube el pedido manuscrito", type=['jpg', 'jpeg', 'png'])
+archivo = st.file_uploader("Sube la foto del pedido", type=['jpg', 'jpeg', 'png'])
 
 if archivo:
     img_pil = Image.open(archivo)
-    img_final = preprocesamiento_avanzado(img_pil)
-    st.image(img_final, caption="Imagen Optimizada para IA", width=400)
+    img_prep = procesar_imagen_quirurgica(img_pil)
+    st.image(img_prep, caption="Vista de alta definición", width=400)
 
-    if st.button("🚀 EXTRAER CON INTELIGENCIA ARTIFICIAL"):
-        with st.spinner("Pensando como un humano..."):
-            reader = load_reader()
-            # Leemos con 'paragraph=True' para mantener el contexto de la dirección
-            resultados = reader.readtext(img_final, detail=0, paragraph=True)
+    if st.button("🚀 EXTRAER DATOS (MODO PRECISIÓN)"):
+        with st.spinner("Analizando manuscrito..."):
+            reader = get_reader()
+            # Escaneo con ajuste de contraste interno
+            results = reader.readtext(img_prep, detail=0, paragraph=True, min_size=10)
             
-            if resultados:
-                # Unimos todo para buscar patrones globales
-                texto_completo = " ".join(resultados).lower()
+            if results:
+                full_text = " ".join(results).lower()
                 
-                # --- MOTOR DE DISCRIMINACIÓN "TIPO GEMINI" ---
+                # --- LÓGICA DE DISCRIMINACIÓN TIPO HUMANO ---
+                # 1. Celular: Buscamos 10 dígitos que empiecen por 3
+                nums_only = re.sub(r'\D', '', full_text)
+                tel_match = re.search(r'3\d{9}', nums_only)
                 
-                # A. Buscar Teléfono (Patrón de 10 dígitos que empiece por 3)
-                solo_numeros = re.sub(r'\D', '', texto_completo)
-                match_tel = re.search(r'3\d{9}', solo_numeros)
+                # 2. Dirección: Buscamos palabras clave de vías en Medellín
+                keywords_dir = ['calle', 'cll', 'cra', 'carrera', 'trans', 'trv', '#', 'no', 'nro', 'apto', 'casa', 'piso']
+                direccion = ""
+                for res in results:
+                    if any(key in res.lower() for key in keywords_dir) and any(char.isdigit() for char in res):
+                        direccion = res
+                        break
                 
-                # B. Buscar Dirección (Buscando palabras de calles colombianas)
-                patrones_dir = ["calle", "cll", "cra", "carrera", "trans", "trv", "diag", "#", "no", "apto", "piso", "casa", "mz", "sector"]
-                dir_sug = ""
-                for bloque in resultados:
-                    if any(p in bloque.lower() for p in patrones_dir):
-                        # Si el bloque tiene un número y una palabra clave, es la dirección
-                        if any(char.isdigit() for char in bloque):
-                            dir_sug = bloque.strip()
-                            break
-                
-                # C. Buscar Nombre (El primer bloque que no sea dirección y sea texto)
-                nom_sug = resultados[0]
-                for bloque in resultados:
-                    # Si no es dirección y tiene más de 3 letras, probablemente es el nombre
-                    if not any(p in bloque.lower() for p in patrones_dir) and len(bloque) > 5:
-                        nom_sug = bloque
+                # 3. Nombre: Si no es dirección ni teléfono, y está al principio, es el nombre
+                nombre = results[0]
+                for res in results:
+                    if len(res) > 5 and not any(key in res.lower() for key in keywords_dir) and not re.search(r'3\d{9}', res):
+                        nombre = res
                         break
 
-                st.session_state['datos_ia'] = {
-                    'nombre': nom_sug.title(),
-                    'tel': match_tel.group() if match_tel else "",
-                    'dir': dir_sug.title()
+                st.session_state['mkt_data'] = {
+                    'n': nombre.title(),
+                    't': tel_match.group() if tel_match else "",
+                    'd': direccion.title()
                 }
-                st.success("¡Extracción finalizada!")
+                st.success("¡Datos capturados con éxito!")
 
 st.divider()
 
-# --- FORMULARIO DE VERIFICACIÓN ---
-with st.form("confirmacion_tropi"):
-    st.subheader("Datos del Cliente")
+# --- FORMULARIO DE FIDELIZACIÓN ---
+with st.form("registro_tropi"):
     c1, c2 = st.columns(2)
     with c1:
-        nombre_f = st.text_input("Nombre", value=st.session_state['datos_ia']['nombre'])
-        tel_f = st.text_input("WhatsApp", value=st.session_state['datos_ia']['tel'])
+        n_input = st.text_input("Nombre", value=st.session_state['mkt_data']['n'])
+        t_input = st.text_input("Celular", value=st.session_state['mkt_data']['t'])
     with c2:
-        dir_f = st.text_input("Dirección", value=st.session_state['datos_ia']['dir'])
-        promo = st.selectbox("Estrategia", ["Envío Gratis 🚚", "Descuento 10% 💸"])
+        d_input = st.text_input("Dirección", value=st.session_state['mkt_data']['d'])
+        promo = st.selectbox("Incentivo", ["Envío Gratis 🚚", "Bono $5.000 🎁"])
 
-    if st.form_submit_button("✅ GUARDAR Y ENVIAR"):
-        if nombre_f and tel_f:
-            # Guardado en DB y enlace de WhatsApp
-            txt_mkt = f"Hola {nombre_f}, bienvenido a Tropiexpress. Promo: {promo}. Destino: {dir_f}"
-            link = f"https://wa.me/57{tel_f}?text={urllib.parse.quote(txt_mkt)}"
+    if st.form_submit_button("✅ GUARDAR Y ENVIAR BIENVENIDA"):
+        if n_input and t_input:
+            msg = f"Hola {n_input}, bienvenido a Tropiexpress. Promo: {promo}. Destino: {d_input}"
+            link = f"https://wa.me/57{t_input}?text={urllib.parse.quote(msg)}"
             st.markdown(f"### [📲 CLICK AQUÍ PARA WHATSAPP]({link})")
