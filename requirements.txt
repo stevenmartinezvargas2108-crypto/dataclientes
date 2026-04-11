@@ -1,7 +1,8 @@
 streamlit
 pandas
+sqlite3
 easyocr
-xlsxwriter
 opencv-python-headless
-Pillow
+xlsxwriter
+pillow
 numpy
