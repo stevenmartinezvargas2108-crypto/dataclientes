@@ -7,101 +7,93 @@ import cv2
 from PIL import Image
 import re
 import urllib.parse
-from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Tropiexpress IA Pro", page_icon="🚀")
+st.set_page_config(page_title="Tropiexpress Master", page_icon="🛒")
 
-# Estados de sesión para evitar que se borren los datos al procesar
-if 'datos' not in st.session_state: 
-    st.session_state['datos'] = {'nombre': '', 'tel': '', 'dir': ''}
+if 'temp_datos' not in st.session_state:
+    st.session_state['temp_datos'] = {'n': '', 't': '', 'd': ''}
 
 @st.cache_resource
-def load_ocr():
-    # Cargamos el modelo una vez para velocidad
+def cargar_lector():
     return easyocr.Reader(['es'], gpu=False)
 
-def motor_limpieza(image_pil):
-    # 1. Reducir para velocidad (Evita la caída del servidor)
+def limpiar_imagen_top(image_pil):
+    # Reducir para que el servidor no se cuelgue por tiempo
     img_np = np.array(image_pil.convert('RGB'))
-    h, w = img_np.shape[:2]
-    img_resized = cv2.resize(img_np, (1000, int(h * (1000 / w))))
-    
-    # 2. Filtro de alta definición para manuscritos
-    gray = cv2.cvtColor(img_resized, cv2.COLOR_RGB2GRAY)
-    # Eliminamos sombras del papel
-    dilated = cv2.dilate(gray, np.ones((7,7), np.uint8))
-    bg = cv2.medianBlur(dilated, 21)
-    diff = 255 - cv2.absdiff(gray, bg)
-    norm = cv2.normalize(diff, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
-    return norm
+    img_cv = cv2.resize(img_np, (1000, int(img_np.shape[0] * (1000 / img_np.shape[1]))))
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_RGB2GRAY)
+    # Filtro para eliminar el gris del papel y resaltar la tinta
+    img_final = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    return img_final
 
 # --- INTERFAZ ---
-st.title("🚀 Tropiexpress: Extracción Inteligente")
+st.title("🛒 Tropiexpress: Extractor Inteligente")
 
 archivo = st.file_uploader("Sube la foto del pedido", type=['jpg', 'jpeg', 'png'])
 
 if archivo:
     img_pil = Image.open(archivo)
-    img_final = motor_limpieza(img_pil)
-    st.image(img_final, caption="Imagen Optimizada", width=350)
+    img_procesada = limpiar_imagen_top(img_pil)
+    st.image(img_procesada, caption="Imagen optimizada", width=350)
 
-    if st.button("🔍 EXTRAER DATOS AHORA"):
-        with st.spinner("Analizando como un experto..."):
-            reader = load_ocr()
-            # Escaneo profundo de párrafos
-            resultados = reader.readtext(img_final, detail=0, paragraph=True)
+    if st.button("🚀 EXTRAER DATOS COMO EXPERTO"):
+        with st.spinner("Analizando información..."):
+            reader = cargar_lector()
+            # Leemos con 'paragraph=True' para que no rompa las direcciones largas
+            resultados = reader.readtext(img_procesada, detail=0, paragraph=True)
             
             if resultados:
-                texto_unido = " ".join(resultados).lower()
+                texto_sucio = " ".join(resultados).replace("\n", " ")
                 
-                # --- MOTOR DE DISCRIMINACIÓN ---
-                # 1. Teléfono: 10 dígitos que empiecen por 3
-                nums = re.sub(r'\D', '', texto_unido)
-                match_tel = re.search(r'3\d{9}', nums)
+                # 1. EXTRAER TELÉFONO (Busca 10 números que inicien con 3)
+                numeros = re.sub(r'\D', '', texto_sucio)
+                tel_match = re.search(r'3\d{9}', numeros)
                 
-                # 2. Dirección: Palabras clave de Colombia
-                patron_dir = re.compile(r'(calle|cll|cra|carrera|#|nro|no|casa|apto|piso|transversal|av)', re.I)
-                dir_hallada = ""
-                for linea in resultados:
-                    if patron_dir.search(linea):
-                        dir_hallada = linea.strip()
+                # 2. EXTRAER DIRECCIÓN (Busca palabras clave de vías)
+                patron_dir = re.compile(r'(calle|cll|cra|carrera|transversal|trv|diagonal|diag|#|nro|no|casa|apto|piso|interior|sector|manzana|mz)', re.I)
+                direccion = ""
+                for bloque in resultados:
+                    if patron_dir.search(bloque):
+                        direccion = bloque.strip()
                         break
                 
-                # 3. Nombre: Si no hay palabra "Nombre", asumimos que es la primera línea corta
-                nombre_hallado = resultados[0]
-                for linea in resultados:
-                    if "nombre" in linea.lower():
-                        nombre_hallado = linea.lower().replace("nombre", "").replace(":", "").strip()
+                # 3. EXTRAER NOMBRE (Suele ser el primer bloque que no es dirección)
+                nombre = resultados[0]
+                for bloque in resultados:
+                    if "nombre" in bloque.lower():
+                        nombre = bloque.lower().replace("nombre", "").replace(":", "").replace("=", "").strip()
+                        break
+                    elif len(bloque) > 3 and not patron_dir.search(bloque) and not any(char.isdigit() for char in bloque[:3]):
+                        nombre = bloque
                         break
 
-                st.session_state['datos'] = {
-                    'nombre': nombre_hallado.capitalize(),
-                    'tel': match_tel.group() if match_tel else "",
-                    'dir': dir_hallada.capitalize()
+                st.session_state['temp_datos'] = {
+                    'n': nombre.title(),
+                    't': tel_match.group() if tel_match else "",
+                    'd': direccion.title()
                 }
-                st.success("¡Datos extraídos con éxito!")
+                st.success("¡Datos capturados!")
 
 st.divider()
 
-# --- FORMULARIO DE CONFIRMACIÓN ---
+# --- FORMULARIO FINAL ---
 with st.form("registro_tropi"):
-    col1, col2 = st.columns(2)
-    with col1:
-        nom = st.text_input("Nombre", value=st.session_state['datos']['nombre'])
-        tel = st.text_input("WhatsApp", value=st.session_state['datos']['tel'])
-    with col2:
-        dire = st.text_input("Dirección", value=st.session_state['datos']['dir'])
-        promo = st.selectbox("Estrategia", ["Envío Gratis hoy 🚚", "Bono $5.000 🎁"])
+    c1, c2 = st.columns(2)
+    with c1:
+        nom_f = st.text_input("Nombre", value=st.session_state['temp_datos']['n'])
+        tel_f = st.text_input("WhatsApp", value=st.session_state['temp_datos']['t'])
+    with c2:
+        dir_f = st.text_input("Dirección", value=st.session_state['temp_datos']['d'])
+        promo = st.selectbox("Regalo", ["Envío Gratis 🚚", "Bono $5.000 🎁"])
 
-    if st.form_submit_button("✅ Guardar y Enviar WhatsApp"):
-        if nom and tel:
-            # Guardado en base de datos
-            conn = sqlite3.connect('tropiexpress_mkt.db')
-            conn.execute("INSERT OR REPLACE INTO clientes (nombre, direccion, telefono) VALUES (?,?,?)", (nom, dire, tel))
+    if st.form_submit_button("✅ GUARDAR Y ENVIAR"):
+        if nom_f and tel_f:
+            conn = sqlite3.connect('tropiexpress_data.db')
+            conn.execute("INSERT OR REPLACE INTO clientes (nombre, direccion, telefono) VALUES (?,?,?)", (nom_f, dir_f, tel_f))
             conn.commit()
             
-            # WhatsApp Marketing
-            msg = f"¡Hola {nom}! Bienvenido a Tropiexpress. Tu beneficio: {promo}. Destino: {dire}."
-            link = f"https://wa.me/57{tel}?text={urllib.parse.quote(msg)}"
-            st.markdown(f"### [📲 CLICK PARA ENVIAR WHATSAPP]({link})")
+            # Enlace de WhatsApp sin errores de sintaxis
+            txt = f"Hola {nom_f}, bienvenido a Tropiexpress. Tu promo: {promo}. Pedido para: {dir_f}"
+            link = f"https://wa.me/57{tel_f}?text={urllib.parse.quote(txt)}"
+            st.markdown(f"### [📲 CLICK PARA WHATSAPP]({link})")
