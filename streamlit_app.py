@@ -7,71 +7,62 @@ from PIL import Image
 from datetime import datetime
 import re
 
-# --- 1. CONFIGURACIÓN Y PROTECCIÓN ANTI-ERROR ---
-st.set_page_config(page_title="Tropiexpress Data", page_icon="🛒", layout="centered")
+# Configuración y bloqueo de traductor para evitar error removeChild
+st.set_page_config(page_title="Tropiexpress Data", page_icon="🛒")
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
-# --- 2. BASE DE DATOS (Incluye Dirección) ---
-@st.cache_resource
+# Base de datos v4 (Limpia)
 def init_db():
-    conn = sqlite3.connect('tropiexpress_data_v2.db', check_same_thread=False)
-    conn.execute('''CREATE TABLE IF NOT EXISTS clientes 
-                 (id INTEGER PRIMARY KEY, fecha TEXT, nombre TEXT, direccion TEXT, telefono TEXT)''')
+    conn = sqlite3.connect('tropiexpress_v4.db', check_same_thread=False)
+    conn.execute('CREATE TABLE IF NOT EXISTS clientes (id INTEGER PRIMARY KEY, fecha TEXT, nombre TEXT, direccion TEXT, telefono TEXT)')
     return conn
 
-conn = init_db()
-
-# --- 3. MOTOR IA LIGERO ---
+# Carga lenta de IA para no bloquear el servidor
 @st.cache_resource
-def load_ocr():
+def load_reader():
     return easyocr.Reader(['es'], gpu=False, recog_network='latin_g2')
 
-reader = load_ocr()
+conn = init_db()
+reader = load_reader()
 
-# --- 4. INTERFAZ ---
-st.title("📱 Registro de Clientes Tropiexpress")
+st.title("🛒 Registro Tropiexpress")
 
-tab1, tab2 = st.tabs(["🆕 Registrar Cliente", "📊 Base de Datos"])
+tab1, tab2 = st.tabs(["📝 Nuevo Cliente", "📋 Listado"])
 
 with tab1:
-    foto = st.file_uploader("Capturar o subir foto", type=['jpg', 'jpeg', 'png'])
-    nombre_sug, tel_sug = "", ""
+    foto = st.file_uploader("Subir foto de datos", type=['jpg', 'png', 'jpeg'])
+    n_sug, t_sug = "", ""
 
     if foto:
         img = Image.open(foto)
-        st.image(img, width=300)
+        st.image(img, width=250)
         if st.button("🔍 Escanear Datos"):
-            with st.spinner("Leyendo..."):
-                resultado = reader.readtext(np.array(img))
-                texto_unido = " ".join([res[1] for res in resultado])
-                tel_match = re.search(r'\d{10}', texto_unido.replace(" ", ""))
-                if tel_match: tel_sug = tel_match.group()
-                if resultado: nombre_sug = resultado[0][1]
+            with st.spinner("Procesando..."):
+                res = reader.readtext(np.array(img))
+                txt = " ".join([r[1] for r in res])
+                tel_m = re.search(r'\d{10}', txt.replace(" ", ""))
+                if tel_m: t_sug = tel_m.group()
+                if res: n_sug = res[0][1]
 
-    # FORMULARIO CON DIRECCIÓN
-    with st.form("registro_cliente", clear_on_submit=True):
-        st.subheader("Confirmar Datos")
-        nombre_f = st.text_input("Nombre del Cliente", value=nombre_sug)
-        direccion_f = st.text_input("Dirección de Entrega") # <--- Recuperado
-        telefono_f = st.text_input("WhatsApp (10 dígitos)", value=tel_sug)
+    with st.form("form_registro", clear_on_submit=True):
+        nombre = st.text_input("Nombre completo", value=n_sug)
+        direccion = st.text_input("Dirección de entrega")
+        whatsapp = st.text_input("WhatsApp (10 dígitos)", value=t_sug)
         
         if st.form_submit_button("✅ Guardar y Enviar Bienvenida"):
-            if nombre_f and telefono_f:
-                fecha_reg = datetime.now().strftime("%d/%m/%Y %H:%M")
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO clientes (fecha, nombre, direccion, telefono) VALUES (?,?,?,?)", 
-                             (fecha_reg, nombre_f, direccion_f, telefono_f))
+            if nombre and whatsapp:
+                fecha = datetime.now().strftime("%d/%m/%Y %H:%M")
+                conn.execute("INSERT INTO clientes (fecha, nombre, direccion, telefono) VALUES (?,?,?,?)", 
+                             (fecha, nombre, direccion, whatsapp))
                 conn.commit()
+                st.success(f"¡{nombre} registrado!")
                 
-                st.success(f"¡{nombre_f} guardado!")
-                
-                # Enlace de WhatsApp
-                msg = f"Hola {nombre_f}, bienvenido a Tropiexpress. Tu pedido será enviado a {direccion_f}. ¡Es un gusto saludarte!"
-                tel_wa = telefono_f if telefono_f.startswith('57') else f"57{telefono_f}"
-                link_wa = f"https://wa.me/{tel_wa}?text={msg.replace(' ', '%20')}"
-                st.markdown(f"### [📲 ENVIAR BIENVENIDA POR WHATSAPP]( {link_wa} )")
+                # Link de WhatsApp con mensaje personalizado
+                msg = f"Hola {nombre}, bienvenido a Tropiexpress. Guardamos tu dirección: {direccion}. ¡Gracias por preferirnos!"
+                link = f"https://wa.me/57{whatsapp}?text={msg.replace(' ', '%20')}"
+                st.markdown(f"### [📲 CLICK AQUÍ PARA WHATSAPP]({link})")
 
 with tab2:
-    st.subheader("Historial")
-    df = pd.read_sql_query("SELECT * FROM clientes ORDER BY id DESC", conn)
-    st.dataframe(df, use_container_width=True)
+    if st.button("Actualizar Lista"):
+        df = pd.read_sql_query("SELECT * FROM clientes ORDER BY id DESC", conn)
+        st.dataframe(df)
