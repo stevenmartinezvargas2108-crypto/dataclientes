@@ -9,87 +9,99 @@ import re
 import urllib.parse
 from datetime import datetime
 
-# --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Tropiexpress v13", page_icon="🛒")
-st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Tropiexpress IA Pro", page_icon="🚀")
 
-# Inicializar estados
-for key in ['n_v', 't_v', 'd_v']:
-    if key not in st.session_state: st.session_state[key] = ""
+# Estados de sesión para evitar que se borren los datos al procesar
+if 'datos' not in st.session_state: 
+    st.session_state['datos'] = {'nombre': '', 'tel': '', 'dir': ''}
 
-# --- 2. MOTOR IA MEJORADO (LECTURA LENTA Y PRECISA) ---
 @st.cache_resource
-def load_ocr_deep():
-    # Cargamos el modelo con soporte para mejor detección de párrafos
+def load_ocr():
+    # Cargamos el modelo una vez para velocidad
     return easyocr.Reader(['es'], gpu=False)
 
-def limpiar_profundo(img_pil):
-    img_np = np.array(img_pil.convert('RGB'))
-    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-    # Filtro de contraste extremo para resaltar solo la tinta del lapicero
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    res = clahe.apply(gray)
-    _, thr = cv2.threshold(res, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return thr
+def motor_limpieza(image_pil):
+    # 1. Reducir para velocidad (Evita la caída del servidor)
+    img_np = np.array(image_pil.convert('RGB'))
+    h, w = img_np.shape[:2]
+    img_resized = cv2.resize(img_np, (1000, int(h * (1000 / w))))
+    
+    # 2. Filtro de alta definición para manuscritos
+    gray = cv2.cvtColor(img_resized, cv2.COLOR_RGB2GRAY)
+    # Eliminamos sombras del papel
+    dilated = cv2.dilate(gray, np.ones((7,7), np.uint8))
+    bg = cv2.medianBlur(dilated, 21)
+    diff = 255 - cv2.absdiff(gray, bg)
+    norm = cv2.normalize(diff, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
+    return norm
 
-# --- 3. INTERFAZ ---
-st.title("🛒 Tropiexpress Pro: IA + Voz")
+# --- INTERFAZ ---
+st.title("🚀 Tropiexpress: Extracción Inteligente")
 
-metodo = st.radio("Entrada de imagen:", ["Galería 📁", "Cámara 📸"], horizontal=True)
-archivo = st.camera_input("Foto") if metodo == "Cámara 📸" else st.file_uploader("Elegir", type=['jpg', 'png'])
+archivo = st.file_uploader("Sube la foto del pedido", type=['jpg', 'jpeg', 'png'])
 
 if archivo:
     img_pil = Image.open(archivo)
-    img_ready = limpiar_profundo(img_pil)
-    st.image(img_ready, caption="Vista de alta definición", width=300)
+    img_final = motor_limpieza(img_pil)
+    st.image(img_final, caption="Imagen Optimizada", width=350)
 
-    if st.button("🔍 ESCANEO PROFUNDO (Priorizar Claridad)"):
-        with st.spinner("Analizando trazos..."):
-            reader = load_ocr_deep()
-            # Ajustamos parámetros para que sea más minucioso
-            res = reader.readtext(img_ready, detail=0, paragraph=True, contrast_ths=0.1, adjust_contrast=0.7)
+    if st.button("🔍 EXTRAER DATOS AHORA"):
+        with st.spinner("Analizando como un experto..."):
+            reader = load_ocr()
+            # Escaneo profundo de párrafos
+            resultados = reader.readtext(img_final, detail=0, paragraph=True)
             
-            if res:
-                texto_full = " ".join(res).lower()
-                # Teléfono
-                nums = re.sub(r'\D', '', texto_full)
-                tel_m = re.search(r'3\d{9}', nums)
+            if resultados:
+                texto_unido = " ".join(resultados).lower()
                 
-                # Discriminación de Dirección
-                direc_patron = re.compile(r'(calle|cll|cra|carrera|#|nro|no|casa|apto|transversal)', re.I)
-                direc_encontrada = ""
-                for linea in res:
-                    if direc_patron.search(linea):
-                        direc_encontrada = linea
+                # --- MOTOR DE DISCRIMINACIÓN ---
+                # 1. Teléfono: 10 dígitos que empiecen por 3
+                nums = re.sub(r'\D', '', texto_unido)
+                match_tel = re.search(r'3\d{9}', nums)
+                
+                # 2. Dirección: Palabras clave de Colombia
+                patron_dir = re.compile(r'(calle|cll|cra|carrera|#|nro|no|casa|apto|piso|transversal|av)', re.I)
+                dir_hallada = ""
+                for linea in resultados:
+                    if patron_dir.search(linea):
+                        dir_hallada = linea.strip()
+                        break
+                
+                # 3. Nombre: Si no hay palabra "Nombre", asumimos que es la primera línea corta
+                nombre_hallado = resultados[0]
+                for linea in resultados:
+                    if "nombre" in linea.lower():
+                        nombre_hallado = linea.lower().replace("nombre", "").replace(":", "").strip()
                         break
 
-                st.session_state['n_v'] = res[0].capitalize()
-                st.session_state['t_v'] = tel_m.group() if tel_m else ""
-                st.session_state['d_v'] = direc_encontrada.capitalize()
-                st.success("¡Lectura detallada lista!")
+                st.session_state['datos'] = {
+                    'nombre': nombre_hallado.capitalize(),
+                    'tel': match_tel.group() if match_tel else "",
+                    'dir': dir_hallada.capitalize()
+                }
+                st.success("¡Datos extraídos con éxito!")
 
 st.divider()
 
-# --- 4. FORMULARIO CON APOYO DE VOZ ---
-st.subheader("Confirmación de Datos")
-st.caption("Tip: Si estás en móvil, usa el micrófono del teclado para dictar en los campos.")
-
-with st.form("form_v13"):
-    # Campos de texto
-    nombre = st.text_input("Nombre del Cliente", value=st.session_state['n_v'])
-    direccion = st.text_input("Dirección de Entrega", value=st.session_state['d_v'])
-    whatsapp = st.text_input("WhatsApp", value=st.session_state['t_v'])
-    
-    promo = st.selectbox("Estrategia de Fidelización", ["Envío Gratis 🚚", "Bono $5.000 🎁", "10% Descuento 💸"])
+# --- FORMULARIO DE CONFIRMACIÓN ---
+with st.form("registro_tropi"):
+    col1, col2 = st.columns(2)
+    with col1:
+        nom = st.text_input("Nombre", value=st.session_state['datos']['nombre'])
+        tel = st.text_input("WhatsApp", value=st.session_state['datos']['tel'])
+    with col2:
+        dire = st.text_input("Dirección", value=st.session_state['datos']['dir'])
+        promo = st.selectbox("Estrategia", ["Envío Gratis hoy 🚚", "Bono $5.000 🎁"])
 
     if st.form_submit_button("✅ Guardar y Enviar WhatsApp"):
-        if nombre and whatsapp:
-            # Lógica de guardado (DB)
-            conn = sqlite3.connect('tropi_v13.db')
-            conn.execute("INSERT OR REPLACE INTO clientes (nombre, direccion, telefono) VALUES (?,?,?)", (nombre, direccion, whatsapp))
+        if nom and tel:
+            # Guardado en base de datos
+            conn = sqlite3.connect('tropiexpress_mkt.db')
+            conn.execute("INSERT OR REPLACE INTO clientes (nombre, direccion, telefono) VALUES (?,?,?)", (nom, dire, tel))
             conn.commit()
             
-            # Marketing
-            msg = f"¡Hola {nombre}! Bienvenido a Tropiexpress. Promo: {promo}. Destino: {direccion}."
-            link = f"https://wa.me/57{whatsapp}?text={urllib.parse.quote(msg)}"
-            st.markdown(f"### [📲 ENVIAR A WHATSAPP]({link})")
+            # WhatsApp Marketing
+            msg = f"¡Hola {nom}! Bienvenido a Tropiexpress. Tu beneficio: {promo}. Destino: {dire}."
+            link = f"https://wa.me/57{tel}?text={urllib.parse.quote(msg)}"
+            st.markdown(f"### [📲 CLICK PARA ENVIAR WHATSAPP]({link})")
