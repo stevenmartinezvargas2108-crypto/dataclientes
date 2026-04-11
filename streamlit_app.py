@@ -1,4 +1,4 @@
-import streamlit as st
+[9:43 p.m., 10/4/2026] Jhonnathan: import streamlit as st
 import sqlite3
 import pandas as pd
 import easyocr
@@ -27,17 +27,24 @@ st.markdown("""
         }
     </style>
     <script>
-        // Intento de bloquear el widget de traducción si aparece
-        document.documentElement.classList.add('notranslate');
-    </script>
-    """, unsafe_allow_html=True)
+        // Intento de blo…
+[9:49 p.m., 10/4/2026] Jhonnathan: import streamlit as st
+import sqlite3
+import pandas as pd
+import easyocr
+import numpy as np
+from PIL import Image
+from datetime import datetime
+from io import BytesIO
+import re
 
-# --- 2. INICIALIZACIÓN DE VARIABLES ---
-if 'nombre_ocr' not in st.session_state: st.session_state.nombre_ocr = ""
-if 'dir_ocr' not in st.session_state: st.session_state.dir_ocr = ""
-if 'tel_ocr' not in st.session_state: st.session_state.tel_ocr = ""
+# --- 1. CONFIGURACIÓN Y PROTECCIÓN ---
+st.set_page_config(page_title="DataClientes Tropiexpress", page_icon="🛒", layout="centered")
 
-# --- 3. BASE DE DATOS ---
+# Inyectar protección básica contra traductores
+st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
+
+# --- 2. BASE DE DATOS Y ESTADO ---
 @st.cache_resource
 def get_db_connection():
     conn = sqlite3.connect('tropiexpress_data.db', check_same_thread=False)
@@ -47,105 +54,73 @@ def get_db_connection():
 
 conn = get_db_connection()
 
-# --- 4. CARGA DE OCR ---
+for key in ['n_ocr', 'd_ocr', 't_ocr']:
+    if key not in st.session_state: st.session_state[key] = ""
+
+# --- 3. CARGA DE OCR ---
 @st.cache_resource
 def get_ocr_reader():
     return easyocr.Reader(['es'], gpu=False)
 
 reader = get_ocr_reader()
 
-# --- 5. USUARIOS ---
-USUARIOS_AUTORIZADOS = {
-    "Sede_Principal": "tropi123",
-    "Sede_Sur": "sur456",
-    "Admin": "master2026"
-}
+# --- 4. ACCESO ---
+USUARIOS = {"Sede_Principal": "tropi123", "Sede_Sur": "sur456", "Admin": "master2026"}
 
-# --- 6. LÓGICA DE ACCESO ---
-if 'punto_venta' not in st.session_state:
+if 'pv' not in st.session_state:
     st.title("🛒 Acceso Tropiexpress")
     with st.form("login"):
-        user = st.selectbox("Seleccione Punto de Venta", list(USUARIOS_AUTORIZADOS.keys()))
-        password = st.text_input("Contraseña", type="password")
-        if st.form_submit_button("Ingresar", use_container_width=True):
-            if USUARIOS_AUTORIZADOS.get(user) == password:
-                st.session_state['punto_venta'] = user
+        u = st.selectbox("Punto de Venta", list(USUARIOS.keys()))
+        p = st.text_input("Contraseña", type="password")
+        if st.form_submit_button("Ingresar"):
+            if USUARIOS.get(u) == p:
+                st.session_state['pv'] = u
                 st.rerun()
-            else:
-                st.error("Contraseña incorrecta")
+            else: st.error("Error de contraseña")
 else:
-    # --- APP PRINCIPAL ---
-    st.sidebar.title(f"📍 {st.session_state['punto_venta']}")
-    if st.sidebar.button("Cerrar Sesión"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
+    # --- 5. APLICACIÓN ---
+    st.sidebar.title(f"📍 {st.session_state['pv']}")
+    if st.sidebar.button("Salir"):
+        del st.session_state['pv']
         st.rerun()
 
     st.title("📱 Registro de Clientes")
-    tab1, tab2 = st.tabs(["🆕 Registro", "📊 Base de Datos"])
+    t1, t2 = st.tabs(["🆕 Registro", "📊 Base de Datos"])
 
-    with tab1:
-        archivo = st.file_uploader("Subir foto (Cámara o Galería)", type=['png', 'jpg', 'jpeg'])
-        
-        if archivo:
-            img = Image.open(archivo)
-            st.image(img, caption="Imagen cargada", width=250)
-            
-            if st.button("🔍 Extraer Datos", use_container_width=True):
-                with st.spinner("Leyendo manuscrito..."):
-                    res = reader.readtext(np.array(img), paragraph=False)
-                    lineas = [r[1] for r in res]
-                    
-                    if lineas:
-                        st.session_state.nombre_ocr = lineas[0]
-                        full_text = " ".join(lineas)
-                        tel_match = re.search(r'\d{10}', full_text.replace(" ", "").replace("-", ""))
-                        if tel_match:
-                            st.session_state.tel_ocr = tel_match.group()
-                        
-                        if len(lineas) > 1:
-                            st.session_state.dir_ocr = " ".join(lineas[1:])
+    with t1:
+        f = st.file_uploader("Foto o Galería", type=['png', 'jpg', 'jpeg'])
+        if f:
+            img = Image.open(f)
+            st.image(img, width=250)
+            if st.button("🔍 Extraer Datos"):
+                with st.spinner("Procesando..."):
+                    res = reader.readtext(np.array(img))
+                    txts = [r[1] for r in res]
+                    if txts:
+                        st.session_state.n_ocr = txts[0]
+                        full = " ".join(txts)
+                        tel = re.search(r'\d{10}', full.replace(" ", ""))
+                        if tel: st.session_state.t_ocr = tel.group()
+                        if len(txts) > 1: st.session_state.d_ocr = " ".join(txts[1:3])
 
-        st.write("---")
-        with st.form("form_reg", clear_on_submit=True):
-            nombre = st.text_input("Nombre del Cliente", value=st.session_state.nombre_ocr)
-            direccion = st.text_input("Dirección", value=st.session_state.dir_ocr)
-            telefono = st.text_input("WhatsApp (ej: 573001234567)", value=st.session_state.tel_ocr)
+        with st.form("f_reg", clear_on_submit=True):
+            nom = st.text_input("Nombre", value=st.session_state.n_ocr)
+            dir = st.text_input("Dirección", value=st.session_state.d_ocr)
+            tel = st.text_input("WhatsApp", value=st.session_state.t_ocr)
             
-            if st.form_submit_button("Guardar y Enviar Bienvenida", use_container_width=True):
-                if nombre and telefono:
+            if st.form_submit_button("💾 Guardar"):
+                if nom and tel:
                     try:
-                        c = conn.cursor()
-                        fecha = datetime.now().strftime("%Y-%m-%d %H:%M")
-                        c.execute("INSERT INTO clientes (fecha, punto_venta, nombre, direccion, telefono) VALUES (?,?,?,?,?)", 
-                                  (fecha, st.session_state['punto_venta'], nombre, direccion, telefono))
+                        cur = conn.cursor()
+                        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        cur.execute("INSERT INTO clientes (fecha, punto_venta, nombre, direccion, telefono) VALUES (?,?,?,?,?)", 
+                                  (now, st.session_state['pv'], nom, dir, tel))
                         conn.commit()
-                        
-                        st.success(f"✅ ¡{nombre} registrado!")
-                        st.session_state.nombre_ocr = ""
-                        st.session_state.dir_ocr = ""
-                        st.session_state.tel_ocr = ""
-                        
-                        msg = (f"Hola {nombre}, bienvenido a Tropiexpress Medellín. "
-                               "Es un gusto tenerte con nosotros.")
-                        whatsapp_link = f"https://wa.me/{telefono}?text={msg.replace(' ', '%20')}"
-                        st.markdown(f"### [📲 Enviar WhatsApp]({whatsapp_link})")
-                        
-                    except sqlite3.IntegrityError:
-                        st.warning("⚠️ Este cliente ya existe.")
-                else:
-                    st.error("Nombre y Teléfono son obligatorios.")
+                        st.success("¡Registrado!")
+                        st.session_state.n_ocr = st.session_state.d_ocr = st.session_state.t_ocr = ""
+                        st.link_button("📲 Enviar WhatsApp", f"https://wa.me/{tel}?text=Bienvenido%20a%20Tropiexpress")
+                    except: st.warning("El cliente ya existe")
 
-    with tab2:
-        query = "SELECT fecha, nombre, direccion, telefono, punto_venta FROM clientes"
-        if st.session_state['punto_venta'] != "Admin":
-            query += f" WHERE punto_venta = '{st.session_state['punto_venta']}'"
-        
-        df = pd.read_sql_query(query, conn)
-        st.dataframe(df, use_container_width=True)
-        
-        if not df.empty:
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False)
-            st.download_button("📥 Descargar Excel", output.getvalue(), "clientes.xlsx", use_container_width=True)
+    with t2:
+        df = pd.read_sql_query("SELECT * FROM clientes", conn)
+        st.dataframe(df)
