@@ -1,95 +1,98 @@
 import streamlit as st
-import cv2
-import numpy as np
+import sqlite3
+import pandas as pd
 import easyocr
+import numpy as np
+import cv2
+from PIL import Image
 import re
 import urllib.parse
-from PIL import Image
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Tropiexpress Ultra-Scanner", page_icon="🛒")
+st.set_page_config(page_title="Tropiexpress Ultra-Extract", page_icon="🛒")
 
-if 'mkt_data' not in st.session_state:
-    st.session_state['mkt_data'] = {'n': '', 't': '', 'd': ''}
+if 'datos' not in st.session_state:
+    st.session_state['datos'] = {'nombre': '', 'tel': '', 'dir': ''}
 
 @st.cache_resource
-def get_reader():
+def load_ocr():
     return easyocr.Reader(['es'], gpu=False)
 
-def procesar_imagen_quirurgica(image_pil):
-    # 1. Redimensionar para no colgar el servidor
-    img = np.array(image_pil.convert('RGB'))
-    img = cv2.resize(img, (1100, int(img.shape[0] * (1100 / img.shape[1]))))
+def limpiar_inteligente(image_pil):
+    # 1. Redimensionar a un tamaño óptimo (ni muy grande para no caerse, ni muy chico para no perder detalle)
+    img_np = np.array(image_pil.convert('RGB'))
+    img_cv = cv2.resize(img_np, (1200, int(img_np.shape[0] * (1200 / img_np.shape[1]))))
     
-    # 2. Eliminar el ruido del papel (Blanqueo extremo)
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    # Filtro para resaltar el lapicero sobre el papel crema
-    rect_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
-    blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rect_kernel)
-    _, thresh = cv2.threshold(blackhat, 10, 255, cv2.THRESH_BINARY_INV)
+    # 2. Convertir a escala de grises
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_RGB2GRAY)
     
-    return thresh
+    # 3. EL SECRETO: Filtro Adaptativo de Gauss
+    # Esto elimina las sombras del papel pero mantiene la nitidez del lapicero
+    processed = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 12)
+    
+    return processed
 
 # --- INTERFAZ ---
-st.title("🛒 Tropiexpress: Escáner Inteligente")
+st.title("🚀 Tropiexpress: Extracción de Alta Precisión")
 
 archivo = st.file_uploader("Sube la foto del pedido", type=['jpg', 'jpeg', 'png'])
 
 if archivo:
     img_pil = Image.open(archivo)
-    img_prep = procesar_imagen_quirurgica(img_pil)
-    st.image(img_prep, caption="Vista de alta definición", width=400)
+    img_final = limpiar_inteligente(img_pil)
+    st.image(img_final, caption="Imagen Optimizada para Lectura", width=400)
 
-    if st.button("🚀 EXTRAER DATOS (MODO PRECISIÓN)"):
-        with st.spinner("Analizando manuscrito..."):
-            reader = get_reader()
-            # Escaneo con ajuste de contraste interno
-            results = reader.readtext(img_prep, detail=0, paragraph=True, min_size=10)
+    if st.button("🔍 EXTRAER DATOS AHORA"):
+        with st.spinner("Procesando con motor de alta precisión..."):
+            reader = load_ocr()
+            # Usamos detail=1 para obtener las posiciones y reordenar el texto si es necesario
+            res = reader.readtext(img_final, detail=0, paragraph=True)
             
-            if results:
-                full_text = " ".join(results).lower()
+            if res:
+                full_text = " ".join(res).lower()
                 
-                # --- LÓGICA DE DISCRIMINACIÓN TIPO HUMANO ---
-                # 1. Celular: Buscamos 10 dígitos que empiecen por 3
+                # --- MOTOR DE DISCRIMINACIÓN ---
+                # 1. Buscar Celular (10 dígitos que empiezan por 3)
                 nums_only = re.sub(r'\D', '', full_text)
-                tel_match = re.search(r'3\d{9}', nums_only)
+                tel_m = re.search(r'3\d{9}', nums_only)
                 
-                # 2. Dirección: Buscamos palabras clave de vías en Medellín
-                keywords_dir = ['calle', 'cll', 'cra', 'carrera', 'trans', 'trv', '#', 'no', 'nro', 'apto', 'casa', 'piso']
-                direccion = ""
-                for res in results:
-                    if any(key in res.lower() for key in keywords_dir) and any(char.isdigit() for char in res):
-                        direccion = res
+                # 2. Buscar Dirección (Buscando patrones de calles/números)
+                patron_dir = re.compile(r'(calle|cll|cra|carrera|#|nro|no|apto|casa|piso|trans|diag)', re.I)
+                dir_s = ""
+                for linea in res:
+                    if patron_dir.search(linea) and any(c.isdigit() for c in linea):
+                        dir_s = linea.strip()
                         break
                 
-                # 3. Nombre: Si no es dirección ni teléfono, y está al principio, es el nombre
-                nombre = results[0]
-                for res in results:
-                    if len(res) > 5 and not any(key in res.lower() for key in keywords_dir) and not re.search(r'3\d{9}', res):
-                        nombre = res
+                # 3. Buscar Nombre (Suele ser la línea que no es dirección ni teléfono)
+                nom_s = res[0]
+                for linea in res:
+                    if len(linea) > 5 and not patron_dir.search(linea) and not re.search(r'3\d{9}', linea):
+                        nom_s = linea.strip()
                         break
 
-                st.session_state['mkt_data'] = {
-                    'n': nombre.title(),
-                    't': tel_match.group() if tel_match else "",
-                    'd': direccion.title()
+                st.session_state['datos'] = {
+                    'nombre': nom_s.title(),
+                    'tel': tel_m.group() if tel_m else "",
+                    'dir': dir_s.title()
                 }
-                st.success("¡Datos capturados con éxito!")
+                st.success("¡Datos extraídos con precisión!")
 
 st.divider()
 
-# --- FORMULARIO DE FIDELIZACIÓN ---
+# --- FORMULARIO DE CONFIRMACIÓN ---
 with st.form("registro_tropi"):
-    c1, c2 = st.columns(2)
-    with c1:
-        n_input = st.text_input("Nombre", value=st.session_state['mkt_data']['n'])
-        t_input = st.text_input("Celular", value=st.session_state['mkt_data']['t'])
-    with c2:
-        d_input = st.text_input("Dirección", value=st.session_state['mkt_data']['d'])
-        promo = st.selectbox("Incentivo", ["Envío Gratis 🚚", "Bono $5.000 🎁"])
+    col1, col2 = st.columns(2)
+    with col1:
+        n = st.text_input("Nombre", value=st.session_state['datos']['nombre'])
+        t = st.text_input("WhatsApp", value=st.session_state['datos']['tel'])
+    with col2:
+        d = st.text_input("Dirección", value=st.session_state['datos']['dir'])
+        promo = st.selectbox("Estrategia", ["Envío Gratis 🚚", "Bono $5.000 🎁"])
 
-    if st.form_submit_button("✅ GUARDAR Y ENVIAR BIENVENIDA"):
-        if n_input and t_input:
-            msg = f"Hola {n_input}, bienvenido a Tropiexpress. Promo: {promo}. Destino: {d_input}"
-            link = f"https://wa.me/57{t_input}?text={urllib.parse.quote(msg)}"
-            st.markdown(f"### [📲 CLICK AQUÍ PARA WHATSAPP]({link})")
+    if st.form_submit_button("✅ Guardar y Enviar"):
+        if n and t:
+            # Enlace de WhatsApp seguro
+            msg = f"Hola {n}, bienvenido a Tropiexpress. Promo: {promo}. Destino: {d}"
+            link = f"https://wa.me/57{t}?text={urllib.parse.quote(msg)}"
+            st.markdown(f"### [📲 CLICK PARA WHATSAPP]({link})")
