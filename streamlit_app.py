@@ -7,101 +7,104 @@ from PIL import Image
 from datetime import datetime
 import re
 
-# --- 1. CONFIGURACIÓN DE PÁGINA E INMUNIZACIÓN ---
+# --- 1. CONFIGURACIÓN Y PROTECCIÓN ANTI-ERROR ---
 st.set_page_config(page_title="Tropiexpress Data", page_icon="🛒", layout="centered")
 
-# Esta línea es vital para que Google Chrome no intente traducir y rompa la app
+# Inyectar meta-tag para bloquear el traductor de Google y evitar el error removeChild
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
-# --- 2. BASE DE DATOS (Optimizada) ---
+# --- 2. BASE DE DATOS ---
 @st.cache_resource
-def get_db():
-    conn = sqlite3.connect('tropiexpress_pro.db', check_same_thread=False)
+def init_db():
+    conn = sqlite3.connect('tropiexpress_data.db', check_same_thread=False)
     conn.execute('''CREATE TABLE IF NOT EXISTS clientes 
-                 (id INTEGER PRIMARY KEY, fecha TEXT, nombre TEXT, direccion TEXT, telefono TEXT)''')
+                 (id INTEGER PRIMARY KEY, fecha TEXT, nombre TEXT, telefono TEXT)''')
     return conn
 
-conn = get_db()
+conn = init_db()
 
-# --- 3. MOTOR DE LECTURA (Versión Ligera) ---
+# --- 3. MOTOR DE INTELIGENCIA ARTIFICIAL (VERSIÓN LIGERA) ---
 @st.cache_resource
-def load_light_ocr():
-    # Usamos 'latin_g2' que es el modelo más liviano disponible para evitar "Oh no" por falta de RAM
+def load_ocr():
+    # Usamos 'latin_g2' para que la descarga sea rápida y no sature la RAM de Streamlit
     return easyocr.Reader(['es'], gpu=False, recog_network='latin_g2')
 
-reader = load_light_ocr()
+reader = load_ocr()
 
-# --- 4. INTERFAZ DE USUARIO ---
-st.title("🛒 Registro de Clientes Tropiexpress")
-st.info("Sugerencia: Si usas el celular, usa el modo Incógnito para evitar errores de traducción.")
+# --- 4. INTERFAZ PRINCIPAL ---
+st.title("📱 Registro de Clientes Tropiexpress")
+st.info("Recomendación: Si usas Chrome, desactiva la traducción automática para evitar cierres inesperados.")
 
-tab1, tab2 = st.tabs(["🆕 Nuevo Registro", "📊 Base de Datos"])
+tab1, tab2 = st.tabs(["🆕 Registrar Cliente", "📊 Base de Datos"])
 
 with tab1:
-    archivo = st.file_uploader("Cargar foto del cliente", type=['jpg', 'jpeg', 'png'])
+    foto = st.file_uploader("Capturar o subir foto de datos", type=['jpg', 'jpeg', 'png'])
     
-    # Variables temporales para el formulario
-    v_nombre, v_dir, v_tel = "", "", ""
+    # Variables de ayuda para el formulario
+    nombre_sugerido = ""
+    tel_sugerido = ""
 
-    if archivo:
-        img = Image.open(archivo)
-        st.image(img, caption="Imagen cargada", width=300)
+    if foto:
+        img = Image.open(foto)
+        st.image(img, width=300, caption="Imagen para procesar")
         
-        if st.button("🔍 Escanear Datos"):
-            with st.spinner("Analizando con IA ligera..."):
-                # Procesamiento de imagen
-                img_array = np.array(img)
-                resultado = reader.readtext(img_array)
+        if st.button("🔍 Escanear Datos con IA"):
+            with st.spinner("Leyendo información..."):
+                # Procesar imagen con EasyOCR
+                resultado = reader.readtext(np.array(img))
+                texto_unido = " ".join([res[1] for res in resultado])
                 
-                # Unimos todo el texto detectado
-                texto_completo = " ".join([res[1] for res in resultado])
-                st.write("*Texto detectado:*", texto_completo)
-                
-                # Intentar extraer teléfono (busca 10 números seguidos)
-                tel_match = re.search(r'\d{10}', texto_completo.replace(" ", ""))
+                # Buscar teléfono (10 dígitos)
+                tel_match = re.search(r'\d{10}', texto_unido.replace(" ", ""))
                 if tel_match:
-                    v_tel = tel_match.group()
+                    tel_sugerido = tel_match.group()
                 
-                # Intentar sacar el nombre (usualmente la primera línea)
-                if len(resultado) > 0:
-                    v_nombre = resultado[0][1]
+                # Tomar la primera línea como posible nombre
+                if resultado:
+                    nombre_sugerido = resultado[0][1]
+                
+                st.write("*Vista previa del texto:*", texto_unido)
 
-    # Formulario de guardado
-    with st.form("form_cliente", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            nombre = st.text_input("Nombre Completo", value=v_nombre)
-            direccion = st.text_input("Dirección")
-        with col2:
-            telefono = st.text_input("WhatsApp / Teléfono", value=v_tel)
-            
-        if st.form_submit_button("💾 Guardar en Sistema"):
-            if nombre and telefono:
+    # Formulario de Registro
+    with st.form("registro_cliente", clear_on_submit=True):
+        st.subheader("Confirmar Datos")
+        nombre_final = st.text_input("Nombre del Cliente", value=nombre_sugerido)
+        telefono_final = st.text_input("Número de WhatsApp (10 dígitos)", value=tel_sugerido)
+        
+        if st.form_submit_button("✅ Guardar y Enviar Bienvenida"):
+            if nombre_final and len(telefono_final) >= 10:
                 try:
-                    fecha_hoy = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    # Guardar en base de datos
+                    fecha_reg = datetime.now().strftime("%d/%m/%Y %H:%M")
                     cursor = conn.cursor()
-                    cursor.execute("INSERT INTO clientes (fecha, nombre, direccion, telefono) VALUES (?,?,?,?)",
-                                 (fecha_hoy, nombre, direccion, telefono))
+                    cursor.execute("INSERT INTO clientes (fecha, nombre, telefono) VALUES (?,?,?)", 
+                                 (fecha_reg, nombre_final, telefono_final))
                     conn.commit()
-                    st.success(f"✅ Cliente {nombre} guardado correctamente.")
+                    
+                    st.success(f"¡{nombre_final} registrado con éxito!")
+                    
+                    # Generar enlace de WhatsApp con mensaje de bienvenida
+                    mensaje = f"Hola {nombre_final}, bienvenido a Tropiexpress. Es un gusto saludarte y tenerte como nuestro cliente."
+                    # Formato para enlace: https://wa.me/573001234567?text=Hola...
+                    # Nota: Se asume código de país 57 (Colombia) si no se incluye
+                    tel_wa = telefono_final if telefono_final.startswith('57') else f"57{telefono_final}"
+                    link_wa = f"https://wa.me/{tel_wa}?text={mensaje.replace(' ', '%20')}"
+                    
+                    st.markdown(f"### [📲 CLICK AQUÍ PARA ENVIAR BIENVENIDA]( {link_wa} )")
+                    
                 except Exception as e:
                     st.error(f"Error al guardar: {e}")
             else:
-                st.warning("Por favor rellena Nombre y Teléfono.")
+                st.warning("Asegúrate de poner el nombre y un número válido.")
 
 with tab2:
-    st.subheader("Clientes Registrados")
-    try:
-        df = pd.read_sql_query("SELECT * FROM clientes ORDER BY id DESC", conn)
+    st.subheader("Historial de Clientes")
+    df = pd.read_sql_query("SELECT fecha as Fecha, nombre as Nombre, telefono as Telefono FROM clientes ORDER BY id DESC", conn)
+    
+    if not df.empty:
         st.dataframe(df, use_container_width=True)
-        
-        # Opción para descargar en Excel
-        if not df.empty:
-            st.download_button(
-                label="📥 Descargar Base de Datos (Excel)",
-                data=df.to_csv(index=False).encode('utf-8'),
-                file_name=f"clientes_tropiexpress_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
-    except:
-        st.write("Aún no hay datos registrados.")
+        # Botón para exportar a Excel/CSV
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Descargar Base de Datos", data=csv, file_name="clientes_tropiexpress.csv", mime="text/csv")
+    else:
+        st.write("No hay clientes registrados todavía.")
