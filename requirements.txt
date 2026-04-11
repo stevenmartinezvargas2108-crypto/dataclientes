@@ -2,6 +2,5 @@ streamlit
 pandas
 easyocr
 opencv-python-headless
-xlsxwriter
 pillow
 numpy
