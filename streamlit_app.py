@@ -11,7 +11,7 @@ try:
     API_KEY = st.secrets["GEN_API_KEY"]
 except Exception:
     # Si trabajas local, asegúrate de tenerla en una variable de entorno o búscala aquí
-    API_KEY = "AIzaSyBauf8AlM9GDlyHAkRBKDvNClGzgSOrQMk" 
+    API_KEY = "AIzaSyD60MZOaP71Qt_LNSmbVjRI5tjazT-sIiQ" 
 
 genai.configure(api_key=API_KEY)
 
