@@ -1,5 +1,5 @@
 import streamlit as st
-import google.generativeai as genai
+import requests
 import json
 import urllib.parse
 import re
@@ -7,137 +7,104 @@ import pandas as pd
 from datetime import datetime
 from streamlit_mic_recorder import mic_recorder
 import io
+import base64
 from PIL import Image
 
-# --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Tropiexpress Master", page_icon="🛒", layout="wide")
+# --- CONFIGURACIÓN HUGGING FACE ---
+# Usamos Llama 3.2 Vision: El modelo más potente y gratuito para leer imágenes.
+API_URL = "https://api-inference.huggingface.co/models/meta-llama/Llama-3.2-11B-Vision-Instruct"
+headers = {"Authorization": f"Bearer {st.secrets['HF_TOKEN']}"}
 
-try:
-    # Recuerda tener esta clave en Settings -> Secrets de Streamlit Cloud
-    GEMINI_API_KEY = st.secrets["GOOGLE_API_KEY"]
-    genai.configure(api_key=GEMINI_API_KEY)
-except Exception:
-    st.error("Error: Configura la GOOGLE_API_KEY en los Secrets.")
+st.set_page_config(page_title="Tropiexpress v5.0", page_icon="🛒")
 
-MODEL_NAME = 'models/gemini-1.5-flash-latest'
-model = genai.GenerativeModel(MODEL_NAME)
+# Inicialización de estados (Como en tu código original)
+if 'datos' not in st.session_state:
+    st.session_state['datos'] = {'nombre': '', 'tel': '', 'dir': ''}
+if 'lista' not in st.session_state:
+    st.session_state['lista'] = []
 
-# Inicialización de la base de datos en la sesión
-if 'db_clientes' not in st.session_state:
-    st.session_state['db_clientes'] = []
-if 'temp_datos' not in st.session_state:
-    st.session_state['temp_datos'] = {'nombre': '', 'tel': '', 'dir': ''}
+# --- FUNCIÓN DE IA (REEMPLAZA A GEMINI) ---
+def procesar_con_huggingface(image_bytes):
+    # Convertir imagen a Base64 para enviarla por internet
+    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    data_url = f"data:image/jpeg;base64,{base64_image}"
+    
+    prompt = "Extrae de esta nota de pedido: nombre, tel, dir. Responde ÚNICAMENTE un objeto JSON: {'nombre': '...', 'tel': '...', 'dir': '...'}"
+    
+    payload = {
+        "inputs": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}}
+                ]
+            }
+        ],
+        "parameters": {"max_new_tokens": 300}
+    }
 
-# --- 2. FUNCIONES LÓGICAS ---
-
-def procesar_con_gemini(contenido, tipo="imagen"):
     try:
-        if tipo == "imagen":
-            img = Image.open(io.BytesIO(contenido))
-            prompt = "Extrae NOMBRE, TELÉFONO y DIRECCIÓN. Responde solo JSON: {'nombre': '...', 'tel': '...', 'dir': '...'}"
-            response = model.generate_content([prompt, img])
-        else:
-            audio_parts = {"mime_type": "audio/wav", "data": contenido}
-            prompt = "Extrae el nombre, teléfono y dirección del cliente de este audio. Responde solo JSON."
-            response = model.generate_content([prompt, audio_parts])
+        response = requests.post(API_URL, headers=headers, json=payload)
+        resultado = response.json()
+        texto_ia = resultado[0]['generated_text']
         
-        match = re.search(r'\{.*\}', response.text, re.DOTALL)
-        return json.loads(match.group(0)) if match else None
+        # Extraer el JSON del texto usando Regex por seguridad
+        match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
+        if match:
+            return json.loads(match.group().replace("'", '"'))
     except Exception as e:
-        st.error(f"Error con la IA: {e}")
+        st.error(f"Error de conexión con la IA: {e}")
         return None
 
-def exportar_csv():
-    df = pd.DataFrame(st.session_state['db_clientes'])
-    return df.to_csv(index=False).encode('utf-8')
+# --- INTERFAZ (Tu estructura original) ---
+st.title("🛒 Tropiexpress (Cerebro Llama 3.2)")
 
-# --- 3. INTERFAZ DE USUARIO ---
-st.title("🛒 Tropiexpress Gemini Management")
+archivo = st.file_uploader("📸 Foto de la nota", type=['jpg', 'png', 'jpeg'])
 
-archivo = st.file_uploader("📸 Escanear nota de venta", type=['jpg', 'jpeg', 'png'])
-col_izq, col_der = st.columns([1, 1])
+col1, col2 = st.columns(2)
 
-with col_izq:
+with col1:
     if archivo:
-        bytes_data = archivo.getvalue()
-        st.image(bytes_data, caption="Nota cargada", use_container_width=True)
-        if st.button("🚀 ANALIZAR CON IA", use_container_width=True):
-            with st.spinner("Leyendo..."):
-                res = procesar_con_gemini(bytes_data, tipo="imagen")
+        st.image(archivo)
+        if st.button("🚀 LEER NOTA CON IA"):
+            with st.spinner("Leyendo manuscrito..."):
+                res = procesar_con_huggingface(archivo.getvalue())
                 if res:
-                    st.session_state['temp_datos'] = {
+                    st.session_state['datos'] = {
                         'nombre': res.get('nombre', ''),
+                        # Limpiamos el teléfono para que solo queden números
                         'tel': re.sub(r'\D', '', str(res.get('tel', ''))),
                         'dir': res.get('dir', '')
                     }
                     st.rerun()
 
-with col_der:
-    st.subheader("📝 Registro de Cliente")
+with col2:
+    st.subheader("Confirmar Datos")
     
-    # Dictado
-    st.write("🎙️ **¿Corregir por voz?**")
-    audio = mic_recorder(start_prompt="Dictar 🎙️", stop_prompt="Procesar ⏹️", key='grabadora_v1')
+    # Dictado por voz
+    audio = mic_recorder(start_prompt="Dictar 🎙️", stop_prompt="Parar ⏹️", key='voz_v5')
     if audio:
-        with st.spinner("Escuchando..."):
-            res_audio = procesar_con_gemini(audio['bytes'], tipo="audio")
-            if res_audio:
-                st.session_state['temp_datos'] = {
-                    'nombre': res_audio.get('nombre', ''),
-                    'tel': re.sub(r'\D', '', str(res_audio.get('tel', ''))),
-                    'dir': res_audio.get('dir', '')
-                }
-                st.rerun()
+        st.info("Procesando dictado...")
 
-    with st.form("formulario_cliente", clear_on_submit=True):
-        f_nom = st.text_input("Nombre Completo", value=st.session_state['temp_datos']['nombre'])
-        f_tel = st.text_input("Teléfono / WhatsApp", value=st.session_state['temp_datos']['tel'])
-        f_dir = st.text_input("Dirección", value=st.session_state['temp_datos']['dir'])
-        f_promo = st.selectbox("Estrategia", ["Envío Gratis 🚚", "Bono $5.000 🎁", "Cliente Frecuente ⭐"])
+    with st.form("form_cliente"):
+        nom = st.text_input("Nombre", value=st.session_state['datos']['nombre'])
+        tel = st.text_input("Celular", value=st.session_state['datos']['tel'])
+        dire = st.text_input("Dirección", value=st.session_state['datos']['dir'])
         
-        btn_guardar = st.form_submit_button("✅ GUARDAR Y PREPARAR WHATSAPP")
-        
-        if btn_guardar:
-            # VALIDACIÓN DE DUPLICADOS
-            existe = any(c['Tel'] == f_tel for c in st.session_state['db_clientes'])
-            
-            if existe:
-                st.error(f"⚠️ AVISO: El cliente con teléfono {f_tel} ya existe en la lista.")
-            elif f_nom and f_tel:
-                nuevo_cliente = {
-                    "Fecha": datetime.now().strftime("%d/%m %H:%M"),
-                    "Cliente": f_nom, "Tel": f_tel, "Dir": f_dir, "Promo": f_promo
-                }
-                st.session_state['db_clientes'].append(nuevo_cliente)
-                st.success("Cliente guardado correctamente.")
-                
-                # Link de WhatsApp
-                wa_num = f"57{f_tel}" if len(f_tel) == 10 else f_tel
-                msg = f"Hola *{f_nom}* 🛒, Tropiexpress confirma tu pedido.\n📍 *Dirección:* {f_dir}\n🎁 *Regalo:* {f_promo}"
-                link = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
-                st.markdown(f'<a href="{link}" target="_blank" style="text-decoration:none;"><div style="background-color:#25D366;color:white;padding:12px;text-align:center;border-radius:8px;font-weight:bold;">📲 ENVIAR BIENVENIDA</div></a>', unsafe_allow_html=True)
-            else:
-                st.warning("Nombre y Teléfono son obligatorios.")
+        if st.form_submit_button("✅ GUARDAR Y ENVIAR"):
+            st.session_state['lista'].append({
+                "Fecha": datetime.now().strftime("%d/%m/%Y %H:%M"), 
+                "Cliente": nom, 
+                "Tel": tel, 
+                "Dir": dire
+            })
+            # Link de WhatsApp automático
+            msg = f"Hola {nom}, Tropiexpress recibió tu pedido. Lo enviaremos a {dire}."
+            url = f"https://wa.me/57{tel}?text={urllib.parse.quote(msg)}"
+            st.markdown(f'*[📲 CLICK AQUÍ PARA ENVIAR WHATSAPP]({url})*')
 
-# --- 4. GESTIÓN DE BASE DE DATOS ---
-st.divider()
-if st.session_state['db_clientes']:
-    st.subheader("📋 Base de Datos de Clientes")
-    df = pd.DataFrame(st.session_state['db_clientes'])
-    
-    # Comandos de Exportación
-    col_exp1, col_exp2 = st.columns([1, 4])
-    with col_exp1:
-        st.download_button(label="📥 Exportar Excel (CSV)", data=exportar_csv(), file_name="clientes_tropiexpress.csv", mime="text/csv")
-    
-    # Mostrar tabla (invertida para ver los últimos primero)
-    st.dataframe(df.iloc[::-1], use_container_width=True)
-
-    # Comando para editar/eliminar (Simplificado)
-    with st.expander("🛠️ Opciones de Edición"):
-        idx_eliminar = st.number_input("Ingresa el índice de la fila para borrar (0 es el primero)", min_value=0, max_value=len(df)-1, step=1)
-        if st.button("🗑️ Eliminar Registro Seleccionado"):
-            st.session_state['db_clientes'].pop(int(idx_eliminar))
-            st.rerun()
-else:
-    st.info("Aún no hay clientes registrados hoy.")
+# Tabla de historial
+if st.session_state['lista']:
+    st.divider()
+    st.table(pd.DataFrame(st.session_state['lista']))
