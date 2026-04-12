@@ -13,7 +13,7 @@ try:
     # Cambia el nombre en tus Secrets de Streamlit a GROQ_API_KEY
     API_KEY = st.secrets["GROQ_API_KEY"]
 except Exception:
-    API_KEY = "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" 
+    API_KEY = "" 
 
 client = Groq(api_key=API_KEY)
 
