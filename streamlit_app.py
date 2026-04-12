@@ -1,72 +1,129 @@
 import streamlit as st
-import PIL.Image
+from groq import Groq
 import json
 import urllib.parse
 import re
 import pandas as pd
-from io import BytesIO
 import base64
-from groq import Groq # Cambiamos de google.generativeai a groq
+from datetime import datetime
+from streamlit_mic_recorder import mic_recorder # Nueva librería para voz
 
-# --- 1. CONFIGURACIÓN DE SEGURIDAD ---
-try:
-    # Cambia el nombre en tus Secrets de Streamlit a GROQ_API_KEY
-    API_KEY = st.secrets["GROQ_API_KEY"]
-except Exception:
-    API_KEY = "" 
-
+# --- CONFIGURACIÓN ---
+API_KEY = st.secrets.get("GROQ_API_KEY", "")
 client = Groq(api_key=API_KEY)
 
-# --- 2. CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Tropiexpress Ultra-Extract", page_icon="🛒", layout="wide")
+MODELO_VISION = "llama-3.2-90b-vision-preview" 
+MODELO_VOZ = "whisper-large-v3-turbo" # El mejor para dictado
+
+st.set_page_config(page_title="Tropiexpress Ultra-AI", page_icon="🛒", layout="wide")
 
 if 'db_clientes' not in st.session_state:
     st.session_state['db_clientes'] = []
 
-# Función para codificar la imagen
-def encode_image(image_file):
-    return base64.b64encode(image_file.read()).decode('utf-8')
+# --- FUNCIONES ---
+def transcribir_audio(audio_bytes):
+    try:
+        # Groq requiere un nombre de archivo para procesar el buffer
+        file_tuple = ("audio.wav", audio_bytes, "audio/wav")
+        transcription = client.audio.transcriptions.create(
+            file=file_tuple,
+            model=MODELO_VOZ,
+            language="es"
+        )
+        return transcription.text
+    except Exception as e:
+        st.error(f"Error al procesar voz: {e}")
+        return ""
 
-# --- 3. LÓGICA CON LLAMA 3 (GROQ) ---
 def analizar_con_groq(imagen_bytes):
-    if not API_KEY:
-        st.error("❌ Falta la GROQ_API_KEY en los Secrets.")
-        return None
-        
     try:
         base64_image = base64.b64encode(imagen_bytes).decode('utf-8')
-        
-        # Usamos Llama 3.2 Vision de 11B o 90B
         completion = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Extrae de esta nota: nombre, tel, dir y urgencia. Responde solo en JSON."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]
-                }
-            ],
+            model=MODELO_VISION,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extrae: nombre, tel, dir. Responde solo JSON: {'nombre': '...', 'tel': '...', 'dir': '...'}"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                ]
+            }],
             response_format={"type": "json_object"}
         )
-        return json.loads(completion.choices[0].message.content)
+        res = json.loads(completion.choices[0].message.content)
+        if res.get('tel'):
+            res['tel'] = re.sub(r'\D', '', str(res['tel']))
+        return res
     except Exception as e:
-        st.error(f"Error con Groq: {e}")
+        st.error(f"Error con la cámara: {e}")
         return None
 
-# --- EL RESTO DEL CÓDIGO (Interfaz y WhatsApp) SIGUE IGUAL ---
-st.title("🛒 Tropiexpress AI (Llama 3 Edition)")
-archivo = st.file_uploader("Sube la nota", type=['jpg', 'jpeg', 'png'])
+# --- INTERFAZ ---
+st.title("🛒 Tropiexpress Ultra-Extract + Voz")
+
+archivo = st.file_uploader("📸 Sube la nota", type=['jpg', 'jpeg', 'png'])
+col1, col2 = st.columns(2)
 
 if archivo:
     bytes_data = archivo.getvalue()
-    st.image(bytes_data, width=350)
+    with col1:
+        st.image(bytes_data, caption="Nota original", use_container_width=True)
+        if st.button("🚀 PROCESAR IMAGEN"):
+            res = analizar_con_groq(bytes_data)
+            if res:
+                st.session_state['temp_datos'] = res
+                tel_nuevo = res.get('tel', '')
+                if any(c['Tel'] == tel_nuevo for c in st.session_state['db_clientes']):
+                    st.warning(f"⚠️ ¡Cliente repetido! Tel: {tel_nuevo}")
+                else:
+                    st.success("✅ Cliente nuevo.")
+
+    with col2:
+        st.subheader("📝 Datos del Cliente")
+        datos = st.session_state.get('temp_datos', {'nombre': '', 'tel': '', 'dir': ''})
+        
+        # --- SECCIÓN DE DICTADO ---
+        st.info("🎙️ ¿Necesitas corregir algo? Pulsa el micro y habla.")
+        audio_dictado = mic_recorder(start_prompt="Record 🎙️", stop_prompt="Stop ⏹️", key='dictador', just_once=True)
+        
+        if audio_dictado:
+            texto_dictado = transcribir_audio(audio_dictado['bytes'])
+            if texto_dictado:
+                st.write(f"✍️ Escuché: {texto_dictado}")
+                st.info("Copia y pega arriba si es necesario.")
+
+        with st.form("registro"):
+            nom = st.text_input("Nombre", value=datos.get('nombre', ''))
+            tel = st.text_input("Teléfono", value=datos.get('tel', ''))
+            dire = st.text_input("Dirección", value=datos.get('dir', ''))
+            promo = st.selectbox("Promoción", ["Envío Gratis 🚚", "Bono $5.000 🎁", "Cliente Frecuente ⭐"])
+            
+            if st.form_submit_button("✅ GUARDAR Y WHATSAPP"):
+                # Registro en la lista
+                nuevo = {
+                    "Fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "Cliente": nom, "Tel": tel, "Dir": dire, "Promo": promo
+                }
+                st.session_state['db_clientes'].append(nuevo)
+                
+                # Link WhatsApp
+                wa_num = f"57{tel}" if len(tel) == 10 else tel
+                msg = f"Hola {nom} 🛒, Tropiexpress confirma tu pedido.\n📍 Dirección: {dire}\n🎁 Regalo: {promo}"
+                link = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
+                
+                st.markdown(f'''
+                    <a href="{link}" target="_blank">
+                        <div style="background-color:#25D366;color:white;padding:15px;text-align:center;border-radius:10px;font-weight:bold;">
+                            📲 ENVIAR MENSAJE DE BIENVENIDA
+                        </div>
+                    </a>
+                ''', unsafe_allow_html=True)
+
+# --- TABLA Y EXPORTACIÓN ---
+st.divider()
+if st.session_state['db_clientes']:
+    df = pd.DataFrame(st.session_state['db_clientes'])
+    st.subheader("📋 Historial Tropiexpress")
+    st.dataframe(df, use_container_width=True)
     
-    if st.button("🚀 PROCESAR AHORA"):
-        with st.spinner("Leyendo con Llama 3..."):
-            resultado = analizar_con_groq(bytes_data)
-            if resultado:
-                # Aquí actualizas tus campos de formulario como antes
-                st.success("¡Datos extraídos!")
-                st.json(resultado)
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 Descargar Base de Datos", csv, "pedidos_tropiexpress.csv", "text/csv")
