@@ -9,12 +9,8 @@ from datetime import datetime
 from streamlit_mic_recorder import mic_recorder
 
 # --- 1. CONFIGURACIÓN ---
-# Probaremos estos 3 en orden. Uno de estos tiene que estar en tu cuenta.
-MODELOS_A_PROBAR = [
-    "llama-3.2-11b-vision-preview",
-    "llama-3.2-90b-vision-preview",
-    "llama-3.2-11b-vision-instant"
-]
+# Estos nombres son los oficiales actuales en la consola de Groq
+MODELO_VISION = "llama-3.2-11b-vision-instant" 
 MODELO_VOZ = "whisper-large-v3-turbo"
 
 try:
@@ -40,35 +36,44 @@ def transcribir_audio(audio_bytes):
             language="es"
         )
         return transcription.text
-    except:
-        return ""
+    except: return ""
 
 def analizar_con_groq(imagen_bytes):
     base64_image = base64.b64encode(imagen_bytes).decode('utf-8')
-    
-    # Bucle para probar modelos hasta que uno funcione
-    for modelo in MODELOS_A_PROBAR:
+    try:
+        completion = client.chat.completions.create(
+            model=MODELO_VISION,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extrae: nombre, tel, dir. Responde JSON."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                ]
+            }],
+            response_format={"type": "json_object"}
+        )
+        res = json.loads(completion.choices[0].message.content)
+        if res.get('tel'):
+            res['tel'] = re.sub(r'\D', '', str(res['tel']))
+        return res
+    except Exception as e:
+        # Si falla el modelo instant, intentamos el 90b como respaldo
         try:
             completion = client.chat.completions.create(
-                model=modelo,
+                model="llama-3.2-90b-vision-instant",
                 messages=[{
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Extrae: nombre, tel, dir. Responde solo JSON: {'nombre': '...', 'tel': '...', 'dir': '...'}"},
+                        {"type": "text", "text": "Extrae: nombre, tel, dir. Responde JSON."},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]
                 }],
                 response_format={"type": "json_object"}
             )
-            res = json.loads(completion.choices[0].message.content)
-            if res.get('tel'):
-                res['tel'] = re.sub(r'\D', '', str(res['tel']))
-            return res, modelo # Retornamos el resultado y qué modelo funcionó
-        except Exception as e:
-            # Si el error es 404 o 400, intentamos el siguiente modelo
-            continue
-            
-    return None, None
+            return json.loads(completion.choices[0].message.content)
+        except:
+            st.error(f"Error de conexión: {e}")
+            return None
 
 # --- 3. INTERFAZ ---
 st.title("🛒 Tropiexpress Ultra-Extract")
@@ -81,19 +86,15 @@ if archivo:
     with col1:
         st.image(bytes_data, use_container_width=True)
         if st.button("🚀 PROCESAR IMAGEN", use_container_width=True):
-            with st.spinner("Buscando modelo disponible en tu Groq..."):
-                res, modelo_exitoso = analizar_con_groq(bytes_data)
+            with st.spinner("Analizando pedido..."):
+                res = analizar_con_groq(bytes_data)
                 if res:
                     st.session_state['temp_datos'] = res
-                    st.info(f"Conectado exitosamente vía: {modelo_exitoso}")
-                    
                     tel_nuevo = res.get('tel', '')
                     if any(c['Tel'] == tel_nuevo for c in st.session_state['db_clientes']):
                         st.warning(f"⚠️ El cliente {tel_nuevo} ya está en la lista.")
                     else:
                         st.success("✅ Datos extraídos.")
-                else:
-                    st.error("❌ Ninguno de los modelos de Groq está disponible en tu cuenta. Revisa si tienes 'Limits' en tu consola de Groq.")
 
     with col2:
         st.subheader("📝 Confirmar Datos")
@@ -118,7 +119,7 @@ if archivo:
                 wa_num = f"57{tel}" if len(tel) == 10 else tel
                 msg = f"Hola {nom} 🛒, Tropiexpress confirma tu pedido.\n📍 Dirección: {dire}\n🎁 Regalo: {promo}"
                 link = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
-                st.markdown(f'<a href="{link}" target="_blank"><div style="background-color:#25D366;color:white;padding:15px;text-align:center;border-radius:10px;font-weight:bold;">📲 ENVIAR BIENVENIDA</div></a>', unsafe_allow_html=True)
+                st.markdown(f'<a href="{link}" target="_blank"><div style="background-color:#25D366;color:white;padding:15px;text-align:center;border-radius:10px;font-weight:bold;">📲 ENVIAR WHATSAPP</div></a>', unsafe_allow_html=True)
 
 # --- 4. TABLA ---
 if st.session_state['db_clientes']:
