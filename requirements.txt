@@ -1,6 +1,6 @@
+google-generativeai
 streamlit
-groq
-pandas
-pillow
 streamlit-mic-recorder
+Pillow
+pandas
 xlsxwriter
