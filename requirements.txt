@@ -1,5 +1,6 @@
 streamlit
 pandas
+easyocr
+opencv-python-headless
 Pillow
-pytesseract
-streamlit-mic-recorder
+numpy
