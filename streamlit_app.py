@@ -1,100 +1,92 @@
 import streamlit as st
-import requests
+import google.generativeai as genai
 import urllib.parse
-import re
 import pandas as pd
 from datetime import datetime
 from streamlit_mic_recorder import mic_recorder
 import io
 from PIL import Image
 
-# --- CONFIGURACIÓN ESTABLE ---
-API_URL = "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-large"
-headers = {"Authorization": f"Bearer {st.secrets['HF_TOKEN']}"}
+# --- CONFIGURACIÓN DE MOTORES ---
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+model = genai.GenerativeModel('gemini-1.5-flash')
 
-st.set_page_config(page_title="Tropiexpress v5.4", page_icon="🛒")
+st.set_page_config(page_title="Tropiexpress Ultra", page_icon="🛒")
 
-# Inicialización robusta
 if 'datos' not in st.session_state:
     st.session_state['datos'] = {'nombre': '', 'tel': '', 'dir': ''}
 if 'lista' not in st.session_state:
     st.session_state['lista'] = []
 
-def limpiar_datos():
-    st.session_state['datos'] = {'nombre': '', 'tel': '', 'dir': ''}
-
-# --- PROCESADOR DE IMAGEN OPTIMIZADO ---
-def procesar_ia_veloz(image_bytes):
+# --- FUNCIÓN DE LECTURA (MOTOR GEMINI - MÁS ESTABLE) ---
+def leer_nota_con_gemini(imagen_pil):
+    prompt = "Extrae de esta nota de supermercado: Nombre del cliente, Teléfono y Dirección. Responde solo en formato JSON."
     try:
-        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        img.thumbnail((400, 400)) # Tamaño mínimo para máxima velocidad
-        
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=50) 
-        
-        # Timeout corto para evitar el bucle infinito
-        response = requests.post(API_URL, headers=headers, data=buf.getvalue(), timeout=10)
-        
-        if response.status_code == 200:
-            # Si el servidor responde, forzamos los datos de la nota de Mary
-            return True
-        return False
-    except:
-        return False
+        response = model.generate_content([prompt, imagen_pil])
+        # Limpieza simple de la respuesta
+        texto = response.text.replace("```json", "").replace("```", "").strip()
+        import json
+        return json.loads(texto)
+    except Exception as e:
+        st.error(f"Error de IA: {e}")
+        return None
 
-st.title("🛒 Tropiexpress (Modo Veloz)")
+st.title("🛒 Tropiexpress v5.5")
 
-if st.button("🧹 Limpiar Todo"):
-    limpiar_datos()
+# Botón de pánico/limpieza
+if st.sidebar.button("🗑️ Limpiar App"):
+    st.session_state['datos'] = {'nombre': '', 'tel': '', 'dir': ''}
     st.rerun()
 
-archivo = st.file_uploader("📸 Foto de la nota", type=['jpg', 'png', 'jpeg'])
+archivo = st.file_uploader("📸 Sube la nota de venta", type=['jpg', 'png', 'jpeg'])
 
-col1, col2 = st.columns(2)
+col1, col2 = st.columns([1, 1])
 
 with col1:
     if archivo:
-        st.image(archivo, use_container_width=True)
-        if st.button("🚀 PROCESAR AHORA"):
-            with st.spinner("Analizando..."):
-                exito = procesar_ia_veloz(archivo.getvalue())
-                if exito:
-                    # Datos extraídos de tu nota real para asegurar que el formulario se llene
+        img = Image.open(archivo)
+        st.image(img, caption="Nota detectada", use_container_width=True)
+        
+        if st.button("🚀 PROCESAR AHORA", use_container_width=True):
+            with st.spinner("Leyendo con Gemini..."):
+                res = leer_nota_con_gemini(img)
+                if res:
                     st.session_state['datos'] = {
-                        'nombre': 'Mary Vergara',
-                        'tel': '3127753187',
-                        'dir': 'Cr 99 47 97 Primer Piso'
+                        'nombre': res.get('nombre', res.get('Nombre', '')),
+                        'tel': res.get('tel', res.get('Teléfono', '')),
+                        'dir': res.get('dir', res.get('Dirección', ''))
                     }
-                    st.success("¡Datos cargados!")
+                    st.success("¡Datos extraídos!")
                     st.rerun()
-                else:
-                    st.warning("Servidor ocupado. Intenta de nuevo en 3 segundos.")
 
 with col2:
-    st.subheader("Datos del Cliente")
+    st.subheader("📝 Confirmación")
     
-    # Dictado separado para evitar interferencias
-    with st.expander("🎙️ Usar Dictado por Voz"):
-        audio = mic_recorder(start_prompt="Hablar 🎙️", stop_prompt="Parar ⏹️", key='voz_v54')
-        if audio:
-            st.info("Audio capturado. Escribe los cambios si la IA no transcribió.")
+    # Dictado por voz independiente
+    st.write("🎙️ **Corregir por voz:**")
+    audio = mic_recorder(start_prompt="Dictar 🎙️", stop_prompt="Parar ⏹️", key='voz_v55')
+    
+    if audio:
+        st.info("Audio capturado. (Edita los campos abajo si es necesario)")
 
-    with st.form("form_final"):
-        nom = st.text_input("Nombre", value=st.session_state['datos']['nombre'])
-        tel = st.text_input("WhatsApp (Solo números)", value=st.session_state['datos']['tel'])
-        dire = st.text_input("Dirección", value=st.session_state['datos']['dir'])
+    with st.form("registro_cliente"):
+        n = st.text_input("Cliente", value=st.session_state['datos']['nombre'])
+        t = st.text_input("WhatsApp", value=st.session_state['datos']['tel'])
+        d = st.text_input("Dirección", value=st.session_state['datos']['dir'])
         
-        if st.form_submit_button("✅ GUARDAR Y GENERAR WHATSAPP"):
-            if nom and tel:
-                nuevo = {"Fecha": datetime.now().strftime("%H:%M"), "Cliente": nom, "Tel": tel, "Dir": dire}
-                st.session_state['lista'].append(nuevo)
-                
-                texto = f"Hola *{nom}*, Tropiexpress recibió tu pedido. Lo entregaremos en *{dire}*."
-                url = f"https://wa.me/57{tel}?text={urllib.parse.quote(texto)}"
-                st.markdown(f"### [📲 ENVIAR A WHATSAPP]({url})")
+        enviar = st.form_submit_button("✅ GUARDAR Y ENVIAR")
+        
+        if enviar:
+            if n and t:
+                st.session_state['lista'].append({"Fecha": datetime.now().strftime("%H:%M"), "Cliente": n, "Tel": t, "Dir": d})
+                # Link de WhatsApp para Medellín
+                msg = f"Hola *{n}*, Tropiexpress ya tiene tu pedido. Va para: *{d}*."
+                url = f"https://wa.me/57{t}?text={urllib.parse.quote(msg)}"
+                st.markdown(f"### [📲 ENVIAR WHATSAPP]({url})")
             else:
-                st.error("Faltan datos obligatorios.")
+                st.warning("Falta nombre o teléfono.")
 
 if st.session_state['lista']:
     st.divider()
-    st.dataframe(pd.DataFrame(st.session_state['lista']))
+    st.write("### Historial de hoy")
+    st.dataframe(pd.DataFrame(st.session_state['lista']), use_container_width=True)
