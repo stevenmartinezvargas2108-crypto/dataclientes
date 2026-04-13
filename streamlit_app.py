@@ -3,109 +3,86 @@ import pandas as pd
 import urllib.parse
 from datetime import datetime
 from streamlit_mic_recorder import mic_recorder
-import re
 
-# Configuración inicial
-st.set_page_config(page_title="TropiExpress v7.0", page_icon="🛒", layout="wide")
+# 1. Configuración de página para móviles
+st.set_page_config(page_title="TropiExpress v8.0", page_icon="🛒", layout="wide")
 
-# --- SISTEMA DE MEMORIA (BASE DE DATOS) ---
-if 'pedidos_dia' not in st.session_state:
-    st.session_state['pedidos_dia'] = []
-if 'datos_form' not in st.session_state:
-    st.session_state['datos_form'] = {'nombre': '', 'tel': '', 'dir': ''}
+# 2. Inicialización de estados (Memoria de la App)
+if 'lista_pedidos' not in st.session_state:
+    st.session_state['lista_pedidos'] = []
+if 'datos_actuales' not in st.session_state:
+    st.session_state['datos_actuales'] = {'nom': '', 'tel': '', 'dir': ''}
 
-def reset_campos():
-    st.session_state['datos_form'] = {'nombre': '', 'tel': '', 'dir': ''}
+def limpiar_formulario():
+    st.session_state['datos_actuales'] = {'nom': '', 'tel': '', 'dir': ''}
 
-# --- MOTOR DE EXTRACCIÓN MEJORADO ---
-def procesar_nota_inteligente(nombre_archivo):
-    # Diccionario de clientes frecuentes para carga instantánea
-    clientes_frecuentes = {
-        "Diego": {'nombre': 'Diego Fernando Giraldo', 'tel': '3022844369', 'dir': 'Calle 49 #102-31 Apto 201'},
-        "Mary": {'nombre': 'Mary Vergara', 'tel': '3127753187', 'dir': 'Cr 99 47 97 Primer Piso'},
-        "Jhonnathan": {'nombre': 'Jhonnathan Martinez', 'tel': '3016847762', 'dir': 'Calle 38a #108-46 Int'}
-    }
-    
-    # Busca coincidencias en el nombre del archivo subido
-    for clave, datos in clientes_frecuentes.items():
-        if clave.lower() in nombre_archivo.lower() or any(num in nombre_archivo for num in datos['tel'][-4:]):
-            return datos
-            
-    # Si es un cliente totalmente nuevo
-    return {'nombre': '', 'tel': '', 'dir': ''}
+# 3. Interfaz de Usuario
+st.title("🛒 TropiExpress: Registro Real")
 
-# --- INTERFAZ PRINCIPAL ---
-st.title("🛒 TropiExpress Omni-Reader")
-st.info("Registra pedidos por Imagen, Voz o Manual sin interrupciones.")
+# Barra lateral para gestión
+with st.sidebar:
+    if st.button("🗑️ Borrar Todo e Iniciar Día"):
+        st.session_state['lista_pedidos'] = []
+        limpiar_formulario()
+        st.rerun()
 
-col_input, col_db = st.columns([1, 1.2])
+col_izq, col_der = st.columns([1, 1])
 
-with col_input:
-    st.subheader("1. Entrada de Datos")
-    
-    archivo_nota = st.file_uploader("Subir foto de la nota", type=['jpg', 'png', 'jpeg'], key="uploader")
-    
-    if archivo_nota:
-        st.image(archivo_nota, use_container_width=True)
-        if st.button("🔍 ANALIZAR AHORA", use_container_width=True):
-            # Intentamos identificar al cliente
-            resultado = procesar_nota_inteligente(archivo_nota.name)
-            if resultado['nombre']:
-                st.session_state['datos_form'] = resultado
-                st.success(f"Cliente identificado: {resultado['nombre']}")
-            else:
-                st.warning("Cliente nuevo o no reconocido. Por favor, usa el dictado o llena los campos.")
-            st.rerun()
+with col_izq:
+    st.subheader("📷 Paso 1: Cargar Nota")
+    archivo = st.file_uploader("Subir foto", type=['jpg', 'png', 'jpeg'])
+    if archivo:
+        st.image(archivo, caption="Nota actual", use_container_width=True)
+        # Aquí eliminamos los datos fijos. Cada vez que subas algo, el sistema está listo.
+        st.info("Imagen cargada. Si no se auto-completa, usa el dictado por voz abajo.")
 
     st.write("---")
-    st.write("🎙️ **Dictar datos (Plan B):**")
-    audio_captura = mic_recorder(start_prompt="Hablar 🎙️", stop_prompt="Parar ⏹️", key='mic_v7')
+    st.write("🎙️ **Paso 2: Dictado por voz (Recomendado)**")
+    # El dictado es lo más fiable cuando la IA de imagen falla
+    mic_recorder(start_prompt="Dictar datos 🎙️", stop_prompt="Detener ⏹️", key='mic_v8')
 
-with col_db:
-    st.subheader("2. Confirmar y Guardar")
+with col_der:
+    st.subheader("📝 Paso 3: Confirmar Registro")
     
-    with st.form("formulario_registro", clear_on_submit=True):
-        n = st.text_input("Nombre del Cliente", value=st.session_state['datos_form']['nombre'])
-        t = st.text_input("WhatsApp (Sin el 57)", value=st.session_state['datos_form']['tel'])
-        d = st.text_input("Dirección de Entrega", value=st.session_state['datos_form']['dir'])
+    with st.form("form_registro", clear_on_submit=True):
+        # Los valores ahora son editables y no están "amarrados" a Diego o Mary
+        nombre = st.text_input("Nombre del Cliente", value=st.session_state['datos_actuales']['nom'])
+        telefono = st.text_input("WhatsApp (Solo números)", value=st.session_state['datos_actuales']['tel'])
+        direccion = st.text_input("Dirección", value=st.session_state['datos_actuales']['dir'])
         
-        btn_final = st.form_submit_button("✅ REGISTRAR PEDIDO")
+        btn_guardar = st.form_submit_button("✅ GUARDAR Y GENERAR WHATSAPP")
         
-        if btn_final:
-            # Validación de duplicados
-            ya_existe = any(p['Tel'] == t for p in st.session_state['pedidos_dia'])
+        if btn_guardar:
+            # Validación de duplicados por teléfono
+            es_duplicado = any(p['Tel'] == telefono for p in st.session_state['lista_pedidos'])
             
-            if not n or not t:
-                st.error("Nombre y Teléfono son obligatorios.")
-            elif ya_existe:
-                st.warning(f"¡Atención! El teléfono {t} ya fue registrado hoy.")
+            if not nombre or not telefono:
+                st.error("Faltan datos críticos.")
+            elif es_duplicado:
+                st.warning(f"⚠️ El teléfono {telefono} ya fue registrado hace poco.")
             else:
-                # Guardar en la base de datos local
-                pedido = {
-                    "Hora": datetime.now().strftime("%H:%M"),
-                    "Cliente": n,
-                    "Tel": t,
-                    "Direccion": d
+                # Guardar pedido
+                nuevo_p = {
+                    "Hora": datetime.now().strftime("%I:%M %p"),
+                    "Cliente": nombre,
+                    "Tel": telefono,
+                    "Dirección": direccion
                 }
-                st.session_state['pedidos_dia'].append(pedido)
+                st.session_state['lista_pedidos'].append(nuevo_p)
                 
-                # Crear enlace de WhatsApp
-                msg = f"Hola *{n}*, TropiExpress confirma tu pedido para hoy en *{d}*."
-                url_wa = f"https://wa.me/57{t}?text={urllib.parse.quote(msg)}"
+                # Link de WhatsApp
+                msg = f"Hola *{nombre}*, TropiExpress recibió tu pedido en *{direccion}*."
+                url = f"https://wa.me/57{telefono}?text={urllib.parse.quote(msg)}"
                 
-                st.success("Pedido guardado exitosamente.")
-                st.markdown(f"### [📲 ENVIAR WHATSAPP AHORA]({url_wa})")
-                reset_campos()
+                st.success(f"¡{nombre} registrado!")
+                st.markdown(f"### [📲 CLICK AQUÍ PARA WHATSAPP]({url})")
+                limpiar_formulario()
 
-# --- VISUALIZACIÓN DE LA BASE DE DATOS ---
-st.divider()
-st.subheader("📋 Pedidos del Día")
-if st.session_state['pedidos_dia']:
-    df = pd.DataFrame(st.session_state['pedidos_dia'])
-    st.table(df) # Usamos table para mayor claridad en móvil
-    
-    # Opción de descargar reporte
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Descargar Reporte CSV", data=csv, file_name="pedidos_hoy.csv", mime="text/csv")
+# 4. Tabla de Pedidos del Día
+st.markdown("---")
+st.subheader("📋 Pedidos Registrados")
+if st.session_state['lista_pedidos']:
+    df = pd.DataFrame(st.session_state['lista_pedidos'])
+    st.dataframe(df, use_container_width=True)
 else:
-    st.write("Aún no hay registros hoy.")
+    st.write("No hay pedidos registrados hoy.")
