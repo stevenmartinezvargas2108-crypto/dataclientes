@@ -1,120 +1,125 @@
 import streamlit as st
 import pandas as pd
-import urllib.parse
+import easyocr
+import numpy as np
+from PIL import Image
 from datetime import datetime
-from streamlit_mic_recorder import mic_recorder
+import re
+import urllib.parse
 
-# 1. CONFIGURACIÓN DE PÁGINA
-st.set_page_config(page_title="TropiExpress v9.0", page_icon="🛒", layout="wide")
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="TropiExpress v11.0", page_icon="🛒", layout="wide")
 
-# 2. INICIALIZACIÓN DE MEMORIA (Session State)
-if 'datos' not in st.session_state:
-    st.session_state.datos = {'n': '', 't': '', 'd': ''}
-if 'lista' not in st.session_state:
-    st.session_state.lista = []
+# Inicializar EasyOCR (Carga local sin API Keys)
+@st.cache_resource
+def load_ocr():
+    return easyocr.Reader(['es']) 
 
-# Función para actualizar la memoria
-def actualizar_datos(nombre, tel, dir):
-    st.session_state.datos['n'] = nombre
-    st.session_state.datos['t'] = tel
-    st.session_state.datos['d'] = dir
+reader = load_ocr()
 
-# 3. LÓGICA DE PROCESAMIENTO (Plan B / Acceso rápido)
-def analizar_archivo(nombre_archivo):
-    archivo = nombre_archivo.lower()
-    if "diego" in archivo:
-        actualizar_datos("Diego Fernando Giraldo", "3022844369", "Calle 49 #102-31 Apto 201")
-    elif "jhonnathan" in archivo:
-        actualizar_datos("Jhonnathan Martinez", "3016847762", "Calle 38a #108-46 Int")
-    elif "mary" in archivo:
-        actualizar_datos("Mary Vergara", "3127753187", "Cr 99 47 97 Primer Piso")
+# Inicializar estados de memoria
+if 'lista_pedidos' not in st.session_state:
+    st.session_state.lista_pedidos = []
+if 'datos_form' not in st.session_state:
+    st.session_state.datos_form = {'n': '', 't': '', 'd': ''}
 
-# 4. INTERFAZ DE USUARIO
-st.title("🛒 TropiExpress v9.0")
-st.markdown("---")
+# --- FUNCIONES DE LÓGICA ---
+def extraer_datos_ocr(imagen):
+    img_array = np.array(imagen)
+    # Leer texto de la imagen
+    resultados = reader.readtext(img_array, detail=0)
+    texto_sucio = " ".join(resultados)
+    
+    # 1. Buscar Teléfono (Patrón de 10 números seguidos)
+    telefonos = re.findall(r'\d{10}', texto_sucio)
+    tel_detectado = telefonos[0] if telefonos else ""
+    
+    # 2. Intentar separar Nombre y Dirección (Lógica por posición)
+    # Normalmente el nombre está al inicio de la nota
+    st.session_state.datos_form['n'] = resultados[0] if len(resultados) > 0 else ""
+    st.session_state.datos_form['t'] = tel_detectado
+    # La dirección suele ser lo que queda al final
+    st.session_state.datos_form['d'] = resultados[-1] if len(resultados) > 1 else ""
+    
+    st.toast("✅ Análisis completado")
 
-col1, col2 = st.columns([1, 1], gap="large")
+# --- INTERFAZ DE USUARIO ---
+st.title("🛒 TropiExpress v11.0")
+st.caption("Base de Datos y Registro Automático")
+
+col1, col2 = st.columns([1, 1.2], gap="large")
 
 with col1:
-    st.subheader("1. Entrada de Información")
+    st.subheader("📸 1. Escanear Nota")
+    archivo = st.file_uploader("Subir foto del pedido", type=['jpg', 'jpeg', 'png'])
     
-    # Subida de imagen
-    img_file = st.file_uploader("Cargar nota / Captura", type=['jpg', 'jpeg', 'png'])
-    if img_file:
-        st.image(img_file, width=300)
-        if st.button("🚀 PROCESAR IMAGEN", use_container_width=True):
-            analizar_archivo(img_file.name)
-            st.rerun()
-
-    st.write("---")
-    st.write("🎙️ **Dictar Datos:**")
-    audio = mic_recorder(
-        start_prompt="Empezar a hablar 🎙️", 
-        stop_prompt="Detener grabación ⏹️", 
-        key='mic_9'
-    )
-    if audio:
-        st.info("Audio capturado correctamente.")
+    if archivo:
+        img = Image.open(archivo)
+        st.image(img, use_container_width=True)
+        
+        if st.button("🔍 EXTRAER DATOS", use_container_width=True):
+            with st.spinner("Leyendo manuscrito..."):
+                extraer_datos_ocr(img)
+                st.rerun()
 
 with col2:
-    st.subheader("2. Formulario de Registro")
-    
-    with st.form("registro_final"):
-        c_nombre = st.text_input("Nombre del Cliente", value=st.session_state.datos['n'])
-        c_tel = st.text_input("WhatsApp (Solo números)", value=st.session_state.datos['t'])
-        c_dir = st.text_input("Dirección de Entrega", value=st.session_state.datos['d'])
+    st.subheader("📝 2. Confirmar y Guardar")
+    with st.form("registro_pedido"):
+        f_nombre = st.text_input("Nombre del Cliente", value=st.session_state.datos_form['n'])
+        f_tel = st.text_input("WhatsApp (10 dígitos)", value=st.session_state.datos_form['t'])
+        f_dir = st.text_input("Dirección de Entrega", value=st.session_state.datos_form['d'])
         
-        btn_enviar = st.form_submit_button("✅ GUARDAR Y GENERAR LINK", use_container_width=True)
+        # Botón de Guardado
+        enviado = st.form_submit_button("📥 GUARDAR EN BASE DE DATOS", use_container_width=True)
         
-        if btn_enviar:
-            if c_nombre and c_tel:
-                # Limpiar el teléfono de espacios o guiones para el link de WhatsApp
-                tel_limpio = "".join(filter(str.isdigit, c_tel))
+        if enviado:
+            if f_nombre and f_tel:
+                # Limpiar teléfono para el link
+                tel_limpio = "".join(filter(str.isdigit, f_tel))
                 
-                nuevo_pedido = {
+                # Guardar en la lista
+                nuevo_registro = {
+                    "Fecha": datetime.now().strftime("%Y-%m-%d"),
                     "Hora": datetime.now().strftime("%H:%M"),
-                    "Cliente": c_nombre,
-                    "Tel": tel_limpio,
-                    "Dirección": c_dir
+                    "Cliente": f_nombre,
+                    "Telefono": tel_limpio,
+                    "Direccion": f_dir
                 }
-                st.session_state.lista.append(nuevo_pedido)
+                st.session_state.lista_pedidos.append(nuevo_registro)
                 
-                # Crear mensaje y URL de WhatsApp
-                msg = f"Hola *{c_nombre}*, TropiExpress confirma tu pedido en *{c_dir}*."
-                encoded_msg = urllib.parse.quote(msg)
-                url = f"https://wa.me/57{tel_limpio}?text={encoded_msg}"
+                # Crear link de WhatsApp
+                mensaje = f"Hola *{f_nombre}*, TropiExpress confirma tu pedido en *{f_dir}*."
+                url_wa = f"https://wa.me/57{tel_limpio}?text={urllib.parse.quote(mensaje)}"
                 
-                st.success(f"¡Pedido de {c_nombre} registrado!")
-                st.markdown(f"""
-                    <a href="{url}" target="_blank">
-                        <button style="
-                            width: 100%;
-                            background-color: #25D366;
-                            color: white;
-                            padding: 15px;
-                            border: none;
-                            border-radius: 5px;
-                            font-weight: bold;
-                            cursor: pointer;
-                            font-size: 18px;">
-                            📲 ENVIAR WHATSAPP AHORA
-                        </button>
-                    </a>
-                """, unsafe_allow_html=True)
+                st.success(f"¡{f_nombre} guardado!")
+                st.markdown(f"[📲 ENVIAR WHATSAPP]({url_wa})")
                 
-                # Limpiar formulario para el siguiente registro
-                st.session_state.datos = {'n': '', 't': '', 'd': ''}
+                # Limpiar formulario
+                st.session_state.datos_form = {'n': '', 't': '', 'd': ''}
             else:
-                st.error("Por favor completa al menos Nombre y Teléfono.")
+                st.error("Faltan datos críticos.")
 
-# 5. TABLA DE HISTORIAL (Visualización mejorada)
+# --- SECCIÓN DE BASE DE DATOS ---
 st.divider()
-if st.session_state.lista:
-    st.subheader("📋 Pedidos del Turno")
-    df = pd.DataFrame(st.session_state.lista)
-    # Mostramos la tabla ocupando todo el ancho y sin índice
+if st.session_state.lista_pedidos:
+    st.subheader("📊 Base de Datos del Día")
+    df = pd.DataFrame(st.session_state.lista_pedidos)
+    
+    # Mostrar tabla
     st.dataframe(df, use_container_width=True, hide_index=True)
     
-    if st.button("🗑️ Limpiar Historial"):
-        st.session_state.lista = []
-        st.rerun()
+    # Botones de exportación
+    col_a, col_b = st.columns(2)
+    with col_a:
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 DESCARGAR EXCEL (CSV)",
+            data=csv,
+            file_name=f"tropiexpress_{datetime.now().strftime('%d_%m')}.csv",
+            mime='text/csv',
+            use_container_width=True
+        )
+    with col_b:
+        if st.button("🗑️ BORRAR TODO", use_container_width=True):
+            st.session_state.lista_pedidos = []
+            st.rerun()
