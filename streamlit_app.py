@@ -2,82 +2,67 @@ import streamlit as st
 import pandas as pd
 import urllib.parse
 from datetime import datetime
-from streamlit_mic_recorder import mic_recorder
 
-# 1. Configuración de pantalla
-st.set_page_config(page_title="TropiExpress v10", page_icon="🛒")
+# CONFIGURACIÓN BÁSICA
+st.set_page_config(page_title="TropiExpress v11", page_icon="🛒")
 
-# 2. Memoria persistente del formulario
+# MEMORIA LOCAL
 if 'f' not in st.session_state:
     st.session_state.f = {'n': '', 't': '', 'd': ''}
-if 'pedidos' not in st.session_state:
-    st.session_state.pedidos = []
+if 'lista' not in st.session_state:
+    st.session_state.lista = []
 
-def limpiar():
-    st.session_state.f = {'n': '', 't': '', 'd': ''}
-
-# 3. Lógica Local (No falla nunca)
-def motor_local(texto_archivo):
-    t = texto_archivo.lower()
+# FUNCIÓN DE AUTO-RELLENADO (Basado en tus clientes frecuentes)
+def auto_relleno(texto):
+    t = texto.lower()
     if "diego" in t:
-        return "Diego Giraldo", "3022844369", "Calle 49 #102-31 Apto 201"
-    if "jhonnathan" in t or "martinez" in t:
-        return "Jhonnathan Martinez", "3016847762", "Calle 38a #108-46 Int"
-    if "mary" in t:
-        return "Mary Vergara", "3127753187", "Cr 99 47 97 Primer Piso"
-    return "", "", ""
+        st.session_state.f = {'n': 'Diego Giraldo', 't': '3022844369', 'd': 'Calle 49 #102-31 Apto 201'}
+    elif "mary" in t or "vergara" in t:
+        st.session_state.f = {'n': 'Mary Vergara', 't': '3127753187', 'd': 'Cr 99 47 97 Primer Piso'}
+    elif "jhonnathan" in t:
+        st.session_state.f = {'n': 'Jhonnathan Martinez', 't': '3016847762', 'd': 'Calle 38a #108-46 Int'}
 
-# --- INTERFAZ ---
-st.title("🛒 TropiExpress v10")
+# INTERFAZ LIMPIA
+st.title("🛒 TropiExpress v11")
 
-# Paso 1: Carga de Imagen
-archivo = st.file_uploader("📷 Cargar foto de la nota", type=['jpg','png','jpeg'])
+# 1. ENTRADA DE DATOS (REMPLAZA AL DICTADO QUE FALLA)
+st.subheader("1. Entrada Rápida")
+input_voz = st.text_area("Pega texto aquí o usa el Micrófono del Teclado 🎙️", 
+                         placeholder="Ej: Diego Giraldo 3022844369...")
 
-if archivo:
-    st.image(archivo, width=200)
-    if st.button("🚀 PROCESAR AHORA"):
-        # Primero intentamos la lógica local por nombre de archivo
-        n, t, d = motor_local(archivo.name)
-        if n:
-            st.session_state.f = {'n': n, 't': t, 'd': d}
-            st.success("Cliente frecuente detectado localmente.")
-        else:
-            st.warning("IA externa fuera de línea. Por favor, dicta o escribe los datos.")
-        st.rerun()
+if st.button("⚡ PROCESAR TEXTO/NOMBRE"):
+    auto_relleno(input_voz)
+    st.rerun()
 
 st.divider()
 
-# Paso 2: Dictado por Voz (Con respaldo visual)
-st.write("🎙️ **Opción 2: Dictado por Voz**")
-audio = mic_recorder(start_prompt="Hablar 🎤", stop_prompt="LISTO ✅", key='mic10')
-if audio:
-    st.info("Audio capturado. Si el texto no aparece abajo, rellena el formulario manualmente.")
-
-st.divider()
-
-# Paso 3: Formulario Manual (Siempre disponible)
-st.subheader("📝 Confirmar Datos")
-with st.form("registro", clear_on_submit=True):
+# 2. FORMULARIO MANUAL (SIEMPRE VISIBLE)
+st.subheader("2. Confirmar y Enviar")
+with st.form("form_final"):
     nom = st.text_input("Nombre", value=st.session_state.f['n'])
-    tel = st.text_input("Celular", value=st.session_state.f['t'])
-    dir_e = st.text_input("Dirección", value=st.session_state.f['d'])
+    tel = st.text_input("WhatsApp (Sin 57)", value=st.session_state.f['t'])
+    dir = st.text_input("Dirección", value=st.session_state.f['d'])
     
-    if st.form_submit_button("✅ REGISTRAR Y ENVIAR WHATSAPP"):
+    enviar = st.form_submit_button("✅ GUARDAR Y GENERAR WHATSAPP")
+    
+    if enviar:
         if nom and tel:
-            p = {"Hora": datetime.now().strftime("%H:%M"), "Cliente": nom, "Tel": tel, "Dir": dir_e}
-            st.session_state.pedidos.append(p)
+            # Guardar en historial
+            pedido = {"Hora": datetime.now().strftime("%H:%M"), "Cliente": nom, "Tel": tel}
+            st.session_state.lista.append(pedido)
             
-            # Link de WhatsApp
-            txt = f"Hola *{nom}*, TropiExpress confirma pedido en *{dir_e}*."
-            url = f"https://wa.me/57{tel}?text={urllib.parse.quote(txt)}"
+            # Crear enlace
+            mensaje = f"Hola *{nom}*, TropiExpress confirma pedido en *{dir}*."
+            link = f"https://wa.me/57{tel}?text={urllib.parse.quote(mensaje)}"
             
-            st.success(f"¡{nom} registrado!")
-            st.markdown(f"### [📲 CLICK PARA WHATSAPP]({url})")
-            limpiar()
+            st.success("¡Registrado!")
+            st.markdown(f"### [📲 ABRIR WHATSAPP AQUÍ]({link})")
+            # Limpiar para el siguiente
+            st.session_state.f = {'n': '', 't': '', 'd': ''}
         else:
-            st.error("Por favor llena Nombre y Celular.")
+            st.error("Faltan datos críticos.")
 
-# Historial del día
-if st.session_state.pedidos:
+# HISTORIAL
+if st.session_state.lista:
     st.write("---")
-    st.table(pd.DataFrame(st.session_state.pedidos))
+    st.table(pd.DataFrame(st.session_state.lista))
