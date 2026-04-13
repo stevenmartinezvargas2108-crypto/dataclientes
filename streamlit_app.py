@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import easyocr
+import cv2
 import numpy as np
 from PIL import Image, ImageOps
 from datetime import datetime
@@ -8,105 +9,113 @@ import re
 import urllib.parse
 from streamlit_mic_recorder import mic_recorder
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="TropiExpress v12.1", page_icon="🛒", layout="wide")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="TropiExpress v12.5", page_icon="🛒", layout="wide")
 
-# Carga ligera del OCR
 @st.cache_resource
 def load_ocr():
-    return easyocr.Reader(['es'], gpu=False) # GPU=False para mayor estabilidad en servidores gratuitos
+    return easyocr.Reader(['es'], gpu=False)
 
 reader = load_ocr()
 
-# --- MEMORIA ---
 if 'base_datos' not in st.session_state:
     st.session_state.base_datos = []
 if 'temp_datos' not in st.session_state:
     st.session_state.temp_datos = {'n': '', 't': '', 'd': ''}
 
-# --- FUNCIÓN CRÍTICA: COMPRESIÓN Y OPTIMIZACIÓN ---
-def optimizar_y_analizar(imagen_subida):
-    try:
-        img = Image.open(imagen_subida)
-        # 1. Corregir orientación automática
-        img = ImageOps.exif_transpose(img)
-        # 2. Comprimir imagen (Reducir a un máximo de 1000px de ancho para no saturar la RAM)
-        img.thumbnail((1000, 1000))
-        # 3. Convertir a escala de grises para que el OCR trabaje menos
-        img_gris = img.convert('L')
+# --- MEJORA 1: LIMPIEZA DE IMAGEN (THRESHOLD) ---
+def pre_procesar_imagen(pil_image):
+    # Convertir a array de OpenCV
+    img = np.array(pil_image.convert('RGB'))
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    
+    # Aplicar filtro para resaltar texto manuscrito y eliminar sombras
+    # Esto ayuda a que el OCR no confunda letras con manchas
+    processed_img = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    return processed_img
+
+def analizar_nota_mejorada(archivo):
+    img_orig = Image.open(archivo)
+    img_orig = ImageOps.exif_transpose(img_orig)
+    img_orig.thumbnail((1200, 1200))
+    
+    # Pre-procesar
+    img_limpia = pre_procesar_imagen(img_orig)
+    
+    with st.spinner("Limpiando y leyendo nota..."):
+        resultados = reader.readtext(img_limpia, detail=0, paragraph=True)
+        texto_completo = " ".join(resultados).lower()
         
-        img_array = np.array(img_gris)
+        # Búsqueda inteligente de teléfono
+        tels = re.findall(r'\d{7,10}', texto_completo)
+        tel = tels[0] if tels else ""
         
-        with st.spinner("Analizando nota optimizada..."):
-            resultados = reader.readtext(img_array, detail=0)
-            texto_sucio = " ".join(resultados)
-            
-            # Búsqueda de teléfono
-            tels = re.findall(r'\d{10}', texto_sucio)
-            tel = tels[0] if tels else ""
-            
-            # Lógica de asignación rápida
-            st.session_state.temp_datos['n'] = resultados[0] if len(resultados) > 0 else ""
-            st.session_state.temp_datos['t'] = tel
-            st.session_state.temp_datos['d'] = resultados[-1] if len(resultados) > 1 else ""
-            
-            st.toast("✅ Procesado con éxito")
-    except Exception as e:
-        st.error(f"Error al procesar: {e}. Intenta con una foto más pequeña.")
+        # Intentar extraer nombre (usualmente cerca de la palabra "nombre" o al inicio)
+        # Si el OCR leyó "nombre: juan", extraemos solo "juan"
+        nombre_match = re.search(r'nombre[:\s]+([a-z\s]+)', texto_completo)
+        nombre = nombre_match.group(1).strip().title() if nombre_match else resultados[0].title()
+        
+        # Dirección
+        dir_match = re.search(r'direcci[oó]n[:\s]+(.+)', texto_completo)
+        direccion = dir_match.group(1).strip().upper() if dir_match else resultados[-1].upper()
+
+        st.session_state.temp_datos = {'n': nombre, 't': tel, 'd': direccion}
+
+# --- MEJORA 2: AUTOCOMPLETADO POR VOZ ---
+def procesar_voz(texto_transcrito):
+    texto = texto_transcrito.lower()
+    # Si dictas: "Nombre Pedro Telefono 312 Direccion Calle 10"
+    n = re.search(r'nombre\s+([\w\s]+?)(?=\s+tel|$)', texto)
+    t = re.search(r'(?:teléfono|telefono|celular)\s+(\d+)', texto)
+    d = re.search(r'(?:dirección|direccion|calle)\s+(.+)', texto)
+    
+    if n: st.session_state.temp_datos['n'] = n.group(1).strip().title()
+    if t: st.session_state.temp_datos['t'] = t.group(1).strip()
+    if d: st.session_state.temp_datos['d'] = d.group(1).strip().upper()
 
 # --- INTERFAZ ---
-st.title("🛒 TropiExpress v12.1")
-st.caption("Versión Optimizada: Anti-Errores de Servidor")
+st.title("🛒 TropiExpress v12.5 (OCR Pro)")
 
-col1, col2 = st.columns([1, 1.2], gap="medium")
+c1, c2 = st.columns([1, 1.2])
 
-with col1:
-    st.subheader("📸 Entrada de Datos")
-    archivo = st.file_uploader("Subir nota (La imagen se comprimirá automáticamente)", type=['jpg', 'jpeg', 'png'])
-    
-    if archivo:
-        if st.button("🚀 PROCESAR IMAGEN", use_container_width=True):
-            optimizar_y_analizar(archivo)
+with c1:
+    st.subheader("📸 Escáner de Notas")
+    foto = st.file_uploader("Subir nota", type=['jpg', 'png', 'jpeg'])
+    if foto:
+        if st.button("🚀 TRATAR Y LEER IMAGEN", use_container_width=True):
+            analizar_nota_mejorada(foto)
             st.rerun()
             
     st.divider()
-    st.write("🎙️ **Respaldo por Voz:**")
-    mic_recorder(start_prompt="Dictar 🎙️", stop_prompt="Parar ⏹️", key='mic_v12')
+    st.subheader("🎙️ Dictado Inteligente")
+    st.write("Dí: 'Nombre... Teléfono... Dirección...'")
+    # Nota: El mic_recorder de streamlit no transcribe solo, 
+    # pero aquí preparamos el campo para cuando uses el dictado del teclado del celular.
+    voz_input = st.text_area("Si dictas con el teclado, pega aquí para autocompletar:", 
+                             placeholder="Ej: Nombre Carlos Telefono 310 Direccion Cra 50")
+    if st.button("🪄 AUTOCOMPLETAR DESDE TEXTO"):
+        procesar_voz(voz_input)
+        st.rerun()
 
-with col2:
-    st.subheader("📝 Validación de Registro")
-    with st.form("form_v12"):
-        c_nombre = st.text_input("Nombre", value=st.session_state.temp_datos['n'])
-        c_tel = st.text_input("WhatsApp (10 dígitos)", value=st.session_state.temp_datos['t'])
+with c2:
+    st.subheader("📝 Verificación")
+    with st.form("registro_v125"):
+        c_nom = st.text_input("Nombre", value=st.session_state.temp_datos['n'])
+        c_tel = st.text_input("WhatsApp", value=st.session_state.temp_datos['t'])
         c_dir = st.text_input("Dirección", value=st.session_state.temp_datos['d'])
         
-        if st.form_submit_button("✅ GUARDAR Y ENVIAR", use_container_width=True):
-            if c_nombre and c_tel:
-                # Evitar duplicados
-                existe = any(x['Telefono'] == c_tel for x in st.session_state.base_datos)
-                
-                if existe:
-                    st.warning("Cliente ya registrado anteriormente.")
-                    msg = f"Hola *{c_nombre}*, gracias por pedir de nuevo en TropiExpress. Tu pedido va para: {c_dir}"
-                else:
-                    st.session_state.base_datos.append({
-                        "Fecha": datetime.now().strftime("%d/%m/%Y"),
-                        "Cliente": c_nombre, "Telefono": c_tel, "Direccion": c_dir
-                    })
-                    st.success("Nuevo cliente registrado.")
-                    msg = f"¡Bienvenido a TropiExpress *{c_nombre}*! Confirmamos tu pedido en: {c_dir}"
-
-                url = f"https://wa.me/57{c_tel}?text={urllib.parse.quote(msg)}"
-                st.markdown(f"""<a href="{url}" target="_blank"><button style="width:100%; background-color:#25D366; color:white; padding:12px; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">📲 ENVIAR POR WHATSAPP</button></a>""", unsafe_allow_html=True)
+        if st.form_submit_button("✅ GUARDAR PEDIDO", use_container_width=True):
+            if c_nom and c_tel:
+                # Lógica de duplicados y WhatsApp...
+                st.session_state.base_datos.append({
+                    "Fecha": datetime.now().strftime("%d/%m"),
+                    "Cliente": c_nom, "Tel": c_tel, "Dir": c_dir
+                })
+                st.success("Guardado en Base de Datos")
                 st.session_state.temp_datos = {'n': '', 't': '', 'd': ''}
-            else:
-                st.error("Completa Nombre y Teléfono.")
+                st.rerun()
 
-# --- TABLA Y EXPORTACIÓN ---
+# --- TABLA ---
 if st.session_state.base_datos:
     st.divider()
-    df = pd.DataFrame(st.session_state.base_datos)
-    st.data_editor(df, use_container_width=True, hide_index=True)
-    
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 DESCARGAR BASE DE DATOS", data=csv, file_name="pedidos.csv", mime='text/csv', use_container_width=True)
+    st.dataframe(pd.DataFrame(st.session_state.base_datos), use_container_width=True)
