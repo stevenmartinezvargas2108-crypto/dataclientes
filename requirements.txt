@@ -2,6 +2,6 @@ streamlit
 pandas
 easyocr
 opencv-python-headless
-Pillow
 numpy
-streamlit-mic-recorder
+Pillow
+openai
