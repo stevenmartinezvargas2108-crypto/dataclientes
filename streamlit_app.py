@@ -3,51 +3,39 @@ import pandas as pd
 from datetime import datetime
 import json
 import re
+import io
+from PIL import Image, ImageOps
+import numpy as np
 from openai import OpenAI
 
-# --- CONFIGURACIÓN ULTRA LIGERA ---
+# --- CONFIGURACIÓN ---
 st.set_page_config(page_title="TropiExpress v13.0", page_icon="🛒")
 
-# Inicialización de estados
 if 'temp_datos' not in st.session_state:
     st.session_state.temp_datos = {'n': '', 't': '', 'd': ''}
 if 'base_datos' not in st.session_state:
     st.session_state.base_datos = []
 
-# --- CLIENTE DE IA (DeepSeek) ---
+# --- IA Y LOGICA ---
 def conectar_ia():
     if "DEEPSEEK_API_KEY" not in st.secrets:
-        st.error("Falta la llave DEEPSEEK_API_KEY en Secrets.")
+        st.error("Configura DEEPSEEK_API_KEY en Secrets.")
         return None
-    return OpenAI(
-        api_key=st.secrets["DEEPSEEK_API_KEY"],
-        base_url="https://api.deepseek.com"
-    )
+    return OpenAI(api_key=st.secrets["DEEPSEEK_API_KEY"], base_url="https://api.deepseek.com")
 
 client = conectar_ia()
 
-# --- FUNCIÓN DE PROCESAMIENTO ---
-def procesar_texto(texto):
+def procesar_con_ia(texto):
     if not client: return
-    
-    prompt = f"""
-    Extrae Nombre, Teléfono (10 dígitos) y Dirección de este texto: "{texto}"
-    Responde SOLO un JSON con las llaves: "nombre", "telefono", "direccion".
-    Si no sabes algo, deja vacío "".
-    """
-    
+    prompt = f"JSON con nombre, telefono, direccion de: {texto}"
     try:
-        # Usamos un timeout para que no se quede pegado eternamente
         response = client.chat.completions.create(
             model="deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            timeout=15.0 
+            temperature=0.1
         )
-        
-        resultado = response.choices[0].message.content.strip()
-        # Limpieza de JSON
-        match = re.search(r'\{.*\}', resultado, re.DOTALL)
+        res = response.choices[0].message.content
+        match = re.search(r'\{.*\}', res, re.DOTALL)
         if match:
             datos = json.loads(match.group())
             st.session_state.temp_datos['n'] = str(datos.get('nombre', '')).title()
@@ -55,52 +43,58 @@ def procesar_texto(texto):
             st.session_state.temp_datos['d'] = str(datos.get('direccion', '')).upper()
             return True
     except Exception as e:
-        st.error(f"Error de conexión: {e}")
+        st.error(f"Error IA: {e}")
     return False
 
-# --- INTERFAZ SIMPLIFICADA ---
-st.title("🛒 TropiExpress IA")
+# --- INTERFAZ ---
+st.title("🛒 TropiExpress IA Total")
 
-# Área de entrada
-st.subheader("🎙️ Dictado o Texto")
-entrada = st.text_area("Pega el pedido aquí:", height=100, key="input_principal")
+tab1, tab2 = st.tabs(["🎙️ Dictado / Texto", "📸 Subir Foto"])
 
-if st.button("PROCESAR PEDIDO 🚀", use_container_width=True):
-    if entrada:
-        with st.spinner("IA analizando..."):
-            exito = procesar_texto(entrada)
-            if exito:
-                st.toast("¡Datos extraídos!", icon="✅")
-                # No usamos st.rerun() aquí para evitar que se pierda el foco en móviles
-            else:
-                st.error("La IA no pudo procesar el texto. Revisa tu saldo o conexión.")
-    else:
-        st.warning("Escribe algo primero.")
+with tab1:
+    entrada = st.text_area("Pega el pedido aquí:", height=100)
+    if st.button("PROCESAR TEXTO 🚀"):
+        if entrada and procesar_con_ia(entrada):
+            st.rerun()
+
+with tab2:
+    foto = st.file_uploader("Sube la foto de la nota", type=['jpg', 'jpeg', 'png'])
+    if foto:
+        if st.button("LEER IMAGEN CON IA"):
+            with st.spinner("Leyendo imagen (esto puede tardar unos segundos)..."):
+                # Importamos EasyOCR solo aquí para no saturar el inicio
+                import easyocr
+                reader = easyocr.Reader(['es'], gpu=False)
+                
+                # Comprimir para evitar error de memoria
+                img = Image.open(foto)
+                img = ImageOps.exif_transpose(img)
+                img.thumbnail((700, 700))
+                
+                # OCR
+                resultados = reader.readtext(np.array(img.convert("RGB")), detail=0)
+                texto_ocr = " ".join(resultados)
+                
+                if procesar_con_ia(texto_ocr):
+                    st.rerun()
 
 st.divider()
 
-# Formulario de Verificación
+# --- VERIFICACIÓN ---
 st.subheader("📝 Verificación")
-with st.form("registro_pedido"):
-    # Estos campos se llenan con el session_state
-    nombre = st.text_input("Nombre", value=st.session_state.temp_datos['n'])
-    telef = st.text_input("Teléfono", value=st.session_state.temp_datos['t'])
-    direc = st.text_input("Dirección", value=st.session_state.temp_datos['d'])
+with st.form("registro"):
+    c_nom = st.text_input("Nombre", value=st.session_state.temp_datos['n'])
+    c_tel = st.text_input("Teléfono", value=st.session_state.temp_datos['t'])
+    c_dir = st.text_input("Dirección", value=st.session_state.temp_datos['d'])
     
-    enviar = st.form_submit_button("✅ GUARDAR DEFINITIVO", use_container_width=True)
-    
-    if enviar:
-        if nombre and telef:
+    if st.form_submit_button("✅ GUARDAR PEDIDO", use_container_width=True):
+        if c_nom and c_tel:
             st.session_state.base_datos.append({
-                "Cliente": nombre, "Tel": telef, "Dir": direc, "Hora": datetime.now().strftime("%H:%M")
+                "Cliente": c_nom, "Tel": c_tel, "Dir": c_dir, "Hora": datetime.now().strftime("%H:%M")
             })
             st.session_state.temp_datos = {'n': '', 't': '', 'd': ''}
             st.success("¡Guardado!")
             st.rerun()
-        else:
-            st.error("Nombre y Teléfono son obligatorios.")
 
-# Tabla de resultados
 if st.session_state.base_datos:
-    st.write("### Pedidos Guardados")
     st.table(pd.DataFrame(st.session_state.base_datos))
