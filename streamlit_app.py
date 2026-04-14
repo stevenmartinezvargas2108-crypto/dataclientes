@@ -3,98 +3,124 @@ import pandas as pd
 from datetime import datetime
 import json
 import re
-import io
-from PIL import Image, ImageOps
-import numpy as np
-from openai import OpenAI
+from PIL import Image
+import google.generativeai as genai
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="TropiExpress v13.0", page_icon="🛒")
+st.set_page_config(page_title="TropiExpress IA v21", page_icon="🛒")
 
-if 'temp_datos' not in st.session_state:
-    st.session_state.temp_datos = {'n': '', 't': '', 'd': ''}
-if 'base_datos' not in st.session_state:
-    st.session_state.base_datos = []
+# Estética para móviles
+st.markdown("""
+<style>
+    .stButton button { width: 100%; height: 3rem; font-weight: bold; background-color: #ff4b4b; color: white; }
+    .stTextInput input { font-size: 1.1rem; }
+    div[data-testid="stForm"] { border: 2px solid #ff4b4b; border-radius: 10px; }
+</style>
+""", unsafe_allow_html=True)
 
-# --- IA Y LOGICA ---
-def conectar_ia():
-    if "DEEPSEEK_API_KEY" not in st.secrets:
-        st.error("Configura DEEPSEEK_API_KEY en Secrets.")
-        return None
-    return OpenAI(api_key=st.secrets["DEEPSEEK_API_KEY"], base_url="https://api.deepseek.com")
+# --- INICIALIZACIÓN ---
+if 'temp' not in st.session_state:
+    st.session_state.temp = {'n': '', 't': '', 'd': ''}
+if 'db' not in st.session_state:
+    st.session_state.db = []
 
-client = conectar_ia()
-
-def procesar_con_ia(texto):
-    if not client: return
-    prompt = f"JSON con nombre, telefono, direccion de: {texto}"
+# --- CONEXIÓN IA ---
+def procesar_con_gemini(prompt, imagen=None):
     try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1
-        )
-        res = response.choices[0].message.content
-        match = re.search(r'\{.*\}', res, re.DOTALL)
-        if match:
-            datos = json.loads(match.group())
-            st.session_state.temp_datos['n'] = str(datos.get('nombre', '')).title()
-            st.session_state.temp_datos['t'] = str(datos.get('telefono', ''))
-            st.session_state.temp_datos['d'] = str(datos.get('direccion', '')).upper()
-            return True
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Si hay imagen, enviamos imagen + prompt, si no, solo texto
+        contenido = [prompt, imagen] if imagen else [prompt]
+        response = model.generate_content(contenido)
+        
+        # Limpiar respuesta JSON
+        res_text = response.text.replace('```json', '').replace('```', '').strip()
+        datos = json.loads(res_text)
+        
+        st.session_state.temp['n'] = str(datos.get('nombre', '')).title().strip()
+        st.session_state.temp['t'] = re.sub(r'\D', '', str(datos.get('telefono', ''))).strip()
+        st.session_state.temp['d'] = str(datos.get('direccion', '')).upper().strip()
+        return True
     except Exception as e:
-        st.error(f"Error IA: {e}")
-    return False
+        st.error(f"Error de IA: {e}")
+        return False
 
 # --- INTERFAZ ---
-st.title("🛒 TropiExpress IA Total")
+st.title("🛒 TropiExpress IA Vision")
 
-tab1, tab2 = st.tabs(["🎙️ Dictado / Texto", "📸 Subir Foto"])
+t1, t2 = st.tabs(["📸 Foto Directa", "🎙️ Dictado / Texto"])
 
-with tab1:
-    entrada = st.text_area("Pega el pedido aquí:", height=100)
+# Prompt maestro para Gemini
+PROMPT_EXTRACTOR = """
+Analiza la información y extrae: nombre del cliente, teléfono y dirección.
+Responde ÚNICAMENTE en este formato JSON:
+{"nombre": "...", "telefono": "...", "direccion": "..."}
+Si no encuentras un dato, deja el valor vacío "".
+"""
+
+with t1:
+    foto = st.file_uploader("Sube o toma foto de la nota", type=['jpg','png','jpeg'])
+    if foto and st.button("LEER FOTO CON IA 🚀"):
+        img = Image.open(foto)
+        with st.spinner("Gemini analizando imagen..."):
+            if procesar_con_gemini(PROMPT_EXTRACTOR, img):
+                st.rerun()
+
+with t2:
+    entrada = st.text_area("Pega texto o usa el dictado del teclado:")
     if st.button("PROCESAR TEXTO 🚀"):
-        if entrada and procesar_con_ia(entrada):
-            st.rerun()
-
-with tab2:
-    foto = st.file_uploader("Sube la foto de la nota", type=['jpg', 'jpeg', 'png'])
-    if foto:
-        if st.button("LEER IMAGEN CON IA"):
-            with st.spinner("Leyendo imagen (esto puede tardar unos segundos)..."):
-                # Importamos EasyOCR solo aquí para no saturar el inicio
-                import easyocr
-                reader = easyocr.Reader(['es'], gpu=False)
-                
-                # Comprimir para evitar error de memoria
-                img = Image.open(foto)
-                img = ImageOps.exif_transpose(img)
-                img.thumbnail((700, 700))
-                
-                # OCR
-                resultados = reader.readtext(np.array(img.convert("RGB")), detail=0)
-                texto_ocr = " ".join(resultados)
-                
-                if procesar_con_ia(texto_ocr):
+        if entrada:
+            with st.spinner("Procesando texto..."):
+                if procesar_con_gemini(PROMPT_EXTRACTOR + f"\nTexto: {entrada}"):
                     st.rerun()
 
 st.divider()
 
-# --- VERIFICACIÓN ---
-st.subheader("📝 Verificación")
-with st.form("registro"):
-    c_nom = st.text_input("Nombre", value=st.session_state.temp_datos['n'])
-    c_tel = st.text_input("Teléfono", value=st.session_state.temp_datos['t'])
-    c_dir = st.text_input("Dirección", value=st.session_state.temp_datos['d'])
+# --- VERIFICACIÓN Y GUARDADO ---
+st.subheader("📝 Verificación de Datos")
+with st.form("valida"):
+    f_nom = st.text_input("Nombre", value=st.session_state.temp['n'])
+    f_tel = st.text_input("Teléfono", value=st.session_state.temp['t'])
+    f_dir = st.text_input("Dirección", value=st.session_state.temp['d'])
     
-    if st.form_submit_button("✅ GUARDAR PEDIDO", use_container_width=True):
-        if c_nom and c_tel:
-            st.session_state.base_datos.append({
-                "Cliente": c_nom, "Tel": c_tel, "Dir": c_dir, "Hora": datetime.now().strftime("%H:%M")
-            })
-            st.session_state.temp_datos = {'n': '', 't': '', 'd': ''}
-            st.success("¡Guardado!")
-            st.rerun()
+    if st.form_submit_button("✅ GUARDAR EN BASE DE DATOS"):
+        if f_nom and f_tel:
+            # Check Duplicados
+            existe = any(cliente['Tel'] == f_tel for cliente in st.session_state.db)
+            if existe:
+                st.warning(f"⚠️ El teléfono {f_tel} ya está registrado.")
+            else:
+                nuevo = {
+                    "Cliente": f_nom, "Tel": f_tel, "Dir": f_dir, 
+                    "Fecha": datetime.now().strftime("%d/%m/%Y %H:%M")
+                }
+                st.session_state.db.insert(0, nuevo)
+                st.session_state.temp = {'n': '', 't': '', 'd': ''} # Limpiar
+                st.success("¡Guardado!")
+                st.rerun()
+        else:
+            st.error("Nombre y Teléfono son obligatorios.")
 
-if st.session_state.base_datos:
-    st.table(pd.DataFrame(st.session_state.base_datos))
+# --- BASE DE DATOS Y WHATSAPP ---
+if st.session_state.db:
+    st.divider()
+    df = pd.DataFrame(st.session_state.db)
+    
+    col_a, col_b = st.columns([2,1])
+    with col_a:
+        st.subheader("📋 Registros")
+    with col_b:
+        csv = df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 Descargar Excel (CSV)", csv, "clientes_tropiexpress.csv", "text/csv")
+
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Botón de WhatsApp para el último registro
+    ultimo = st.session_state.db[0]
+    tel_wa = ultimo['Tel']
+    if len(tel_wa) >= 10:
+        if not tel_wa.startswith("57"): tel_wa = "57" + tel_wa
+        msg = f"Hola {ultimo['Cliente']}, bienvenido a TropiExpress. Hemos recibido tu pedido."
+        link = f"https://wa.me/{tel_wa}?text={msg.replace(' ', '%20')}"
+        st.link_button(f"📲 Enviar Bienvenida a {ultimo['Cliente']}", link)
