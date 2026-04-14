@@ -8,6 +8,7 @@ from datetime import datetime
 import re
 import urllib.parse
 import json
+import io  # Importante para la manipulación de bytes en memoria
 from openai import OpenAI
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -35,6 +36,59 @@ if 'base_datos' not in st.session_state:
     st.session_state.base_datos = []
 if 'temp_datos' not in st.session_state:
     st.session_state.temp_datos = {'n': '', 't': '', 'd': ''}
+
+# ==============================================================================
+# --- NUEVA FUNCIÓN: COMPRESIÓN DE IMAGEN PARA EVITAR ERRORES DE MEMORIA ---
+# ==============================================================================
+def comprimir_imagen(archivo_subido, max_width=1000, max_height=1000, quality=70):
+    """
+    Toma un archivo subido, lo redimensiona y reduce su calidad para bajar los MB.
+    """
+    try:
+        # 1. Abrir la imagen con PIL
+        img = Image.open(archivo_subido)
+        
+        # 2. Corregir orientación basada en EXIF (importante para fotos de celular)
+        img = ImageOps.exif_transpose(img)
+        
+        # 3. Obtener dimensiones actuales
+        width, height = img.size
+        
+        # 4. Calcular el factor de escala manteniendo la relación de aspecto
+        if width > max_width or height > max_height:
+            if width > height:
+                factor = max_width / width
+            else:
+                factor = max_height / height
+            
+            new_width = int(width * factor)
+            new_height = int(height * factor)
+            
+            # 5. Redimensionar la imagen (LANCZOS es un buen filtro de alta calidad)
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+        # 6. Guardar la imagen en un objeto de bytes en memoria
+        buffer_bytes = io.BytesIO()
+        
+        # Convertir a RGB si está en RGBA para poder guardar como JPEG
+        if img.mode in ('RGBA', 'LA'):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            background.paste(img, mask=img.split()[3]) # 3 es el canal alfa
+            img = background
+            
+        img.save(buffer_bytes, format="JPEG", quality=quality, optimize=True)
+        
+        # 7. Convertir de nuevo a un objeto de PIL para el resto del procesamiento
+        buffer_bytes.seek(0)
+        img_comprimida = Image.open(buffer_bytes)
+        
+        #st.success(f"Imagen comprimida de {width}x{height} a {img_comprimida.size[0]}x{img_comprimida.size[1]}.")
+        return img_comprimida
+
+    except Exception as e:
+        st.error(f"Error al comprimir la imagen: {e}")
+        return None
+# ==============================================================================
 
 # --- FUNCIÓN MAESTRA: PROCESAMIENTO CON IA ---
 def procesar_con_ia(texto_crudo):
@@ -76,7 +130,6 @@ def procesar_con_ia(texto_crudo):
                 temperature=0.1
             )
             
-            # Limpieza de respuesta para asegurar JSON puro
             contenido = response.choices[0].message.content.strip()
             limpio = re.search(r'\{.*\}', contenido, re.DOTALL)
             
@@ -85,7 +138,7 @@ def procesar_con_ia(texto_crudo):
                 st.session_state.temp_datos['n'] = datos.get('nombre', '')
                 st.session_state.temp_datos['t'] = datos.get('telefono', '')
                 st.session_state.temp_datos['d'] = datos.get('direccion', '')
-                st.success("¡Información extraída!")
+                #st.success("¡Información extraída!")
             else:
                 st.warning("No se pudo estructurar la información del texto.")
 
@@ -94,21 +147,19 @@ def procesar_con_ia(texto_crudo):
 
 # --- PROCESAMIENTO DE IMAGEN ---
 def pre_procesar_imagen(pil_image):
+    # La imagen ya llega comprimida y redimensionada
     img = np.array(pil_image.convert('RGB'))
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    # Mejoramos contraste para que EasyOCR capture más texto para la IA
     gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
     return gray
 
-def analizar_nota_ia(archivo):
-    img_orig = Image.open(archivo)
-    img_orig = ImageOps.exif_transpose(img_orig)
-    img_limpia = pre_procesar_imagen(img_orig)
+def analizar_nota_ia(img_comprimida):
+    # Ya no abrimos el archivo aquí, sino que recibimos la imagen PIL comprimida
+    img_limpia = pre_procesar_imagen(img_comprimida)
     
-    with st.spinner("Escaneando papel..."):
+    with st.spinner("Escaneando papel comprimido..."):
         resultados = reader.readtext(img_limpia, detail=0, paragraph=True)
         texto_ocr = " ".join(resultados)
-        # La IA se encarga de arreglar los errores del OCR
         procesar_con_ia(texto_ocr)
 
 # --- INTERFAZ DE USUARIO ---
@@ -123,9 +174,17 @@ with col_izq:
     
     with tab1:
         foto = st.file_uploader("Cargar imagen", type=['jpg', 'jpeg', 'png'])
+        
+        # Modificación en el flujo del botón: primero comprimir, luego analizar
         if foto and st.button("Analizar Imagen", use_container_width=True):
-            analizar_nota_ia(foto)
-            st.rerun()
+            with st.spinner("Bajando MB para que el celular no sufra..."):
+                img_comprimida = comprimir_imagen(foto)
+            
+            if img_comprimida:
+                analizar_nota_ia(img_comprimida)
+                st.rerun()
+            else:
+                st.error("Hubo un problema al procesar la imagen.")
             
     with tab2:
         texto_libre = st.text_area("Pega el dictado o texto aquí:", placeholder="Ej: Pedido para Don Pedro 3201234567 Calle 45 #23-10 Belén")
@@ -151,7 +210,6 @@ with col_der:
                     "Tel": telefono,
                     "Dir": direccion
                 })
-                # Limpiar después de guardar
                 st.session_state.temp_datos = {'n': '', 't': '', 'd': ''}
                 st.success("¡Pedido registrado exitosamente!")
                 st.rerun()
@@ -164,7 +222,6 @@ if st.session_state.base_datos:
     st.subheader("📋 Pedidos del Día")
     df = pd.DataFrame(st.session_state.base_datos)
     
-    # Link de WhatsApp con mensaje automático
     def crear_link(row):
         texto_wa = f"Hola {row['Cliente']}, TropiExpress confirma tu pedido para entrega en: {row['Dir']}"
         encoded_msg = urllib.parse.quote(texto_wa)
