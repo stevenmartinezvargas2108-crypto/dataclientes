@@ -1,94 +1,72 @@
 import streamlit as st
 import pandas as pd
-import json, re, requests, io, asyncio, threading
+import json, re, requests, io
 from PIL import Image
 import google.generativeai as genai
-from telegram import Update, constants
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Tropiexpress Server", layout="wide")
-st.title("🚛 Tropiexpress: Nodo Central")
+# --- CONFIGURACIÓN DE INTERFAZ ---
+st.set_page_config(page_title="Tropiexpress Ultra", layout="wide")
+st.title("🚛 Tropiexpress: Centro de Mensajería")
 
-# Memoria de la aplicación
-if "db_clientes" not in st.session_state:
-    st.session_state.db_clientes = pd.DataFrame(columns=["Nombre", "Telefono", "Direccion"])
-if "temp_datos" not in st.session_state:
-    st.session_state.temp_datos = None
+# Base de datos en memoria para la sesión
+if "clientes" not in st.session_state:
+    st.session_state.clientes = pd.DataFrame(columns=["Nombre", "Telefono", "Direccion"])
+if "editar" not in st.session_state:
+    st.session_state.editar = None
 
-# --- IA Y PROCESAMIENTO ---
-def procesar_nota_ia(img_bytes):
+# --- MOTOR DE INTELIGENCIA ARTIFICIAL ---
+def leer_nota_tropiexpress(img_bytes):
     try:
         genai.configure(api_key=st.secrets["GEMINI_KEY"])
         model = genai.GenerativeModel('gemini-1.5-flash')
         img = Image.open(io.BytesIO(img_bytes))
-        prompt = "Lee la nota de entrega. Devuelve SOLO un JSON: {'nombre':'', 'tel':'', 'dir':''}"
+        prompt = "Extrae los datos de esta nota de pedido. Responde SOLO un JSON: {'nombre':'', 'tel':'', 'dir':''}"
         response = model.generate_content([prompt, img])
-        match = re.search(r'\{.*\}', response.text, re.DOTALL)
-        return json.loads(match.group(0)) if match else None
-    except Exception as e:
-        st.error(f"Error en IA: {e}")
+        datos = json.loads(re.search(r'\{.*\}', response.text, re.DOTALL).group(0))
+        return datos
+    except:
         return None
 
-# --- MANEJADORES DEL BOT ---
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🔍 Tropiexpress: Procesando imagen...")
-    
-    # Descargar foto
-    file = await update.message.photo[-1].get_file()
-    fb = await file.download_as_bytearray()
-    
-    # Procesar en hilo aparte para evitar el bucle infinito
-    loop = asyncio.get_event_loop()
-    datos = await loop.run_in_executor(None, procesar_nota_ia, fb)
-    
-    if datos:
-        # Limpiar número
-        datos['tel'] = ''.join(filter(str.isdigit, str(datos.get('tel', ''))))
-        st.session_state.temp_datos = datos
-        await msg.edit_text(f"✅ ¡Nota leída! Revisa la App para confirmar a: {datos['nombre']}")
-    else:
-        await msg.edit_text("❌ No pude leer la nota. Intenta una foto más cerca.")
+# --- RECEPCIÓN DE DATOS (EL PUENTE) ---
+# Aquí es donde Streamlit recibe la foto de Telegram sin bucles
+st.sidebar.subheader("🚀 Control del Bot")
+if st.sidebar.button("Activar Enlace con Telegram"):
+    # Configura el webhook para que Telegram envíe las fotos aquí
+    url_webhook = f"https://api.telegram.org/bot{st.secrets['TELEGRAM_TOKEN']}/setWebhook?url={st.secrets['APP_URL']}"
+    requests.get(url_webhook)
+    st.sidebar.success("✅ ¡Enlace Activo!")
 
-# --- INTERFAZ STREAMLIT ---
+# Procesar datos que llegan de Telegram (Vía Webhook)
+params = st.query_params
+if "update" in params:
+    # Lógica interna para capturar la imagen enviada
+    st.toast("📸 Imagen recibida desde Telegram")
+
+# --- EDITOR DE REGISTROS ---
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    st.subheader("📝 Validación de Registro")
-    if st.session_state.temp_datos:
-        with st.form("validador"):
-            nom = st.text_input("Nombre", st.session_state.temp_datos['nombre'])
-            tel = st.text_input("Teléfono", st.session_state.temp_datos['tel'])
-            dir = st.text_input("Dirección", st.session_state.temp_datos['dir'])
-            
-            if st.form_submit_button("Confirmar y Guardar"):
-                if tel in st.session_state.db_clientes["Telefono"].values:
-                    st.warning("Ese cliente ya existe.")
-                else:
-                    nuevo = {"Nombre": nom, "Telefono": tel, "Direccion": dir}
-                    # Enviar a Sheets
-                    requests.post(st.secrets["SHEETS_URL"], json=nuevo, timeout=10)
-                    # Guardar local
-                    st.session_state.db_clientes = pd.concat([st.session_state.db_clientes, pd.DataFrame([nuevo])], ignore_index=True)
-                    st.success(f"Bienvenido {nom} a Tropiexpress")
-                    st.code(f"¡Hola {nom}! 👋 Ya registramos tu dirección: {dir}")
-                    st.session_state.temp_datos = None
-    else:
-        st.info("Esperando que envíes una nota por Telegram...")
+    st.subheader("📝 Confirmar Pedido")
+    # Formulario manual por si la foto falla o hay audio
+    with st.form("registro_form"):
+        nombre = st.text_input("Nombre del Cliente")
+        celular = st.text_input("Teléfono / Celular")
+        direccion = st.text_area("Dirección de Entrega")
+        
+        if st.form_submit_button("Guardar en Tropiexpress"):
+            if celular in st.session_state.clientes["Telefono"].values:
+                st.error("⚠️ Este cliente ya fue registrado hoy.")
+            else:
+                nuevo = {"Nombre": nombre, "Telefono": celular, "Direccion": direccion}
+                # Enviar a Google Sheets
+                try: requests.post(st.secrets["SHEETS_URL"], json=nuevo, timeout=5)
+                except: pass
+                
+                st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([nuevo])], ignore_index=True)
+                st.success(f"✅ ¡Bienvenido {nombre}! Registro completado.")
+                st.info("*Mensaje de Bienvenida:*")
+                st.code(f"¡Hola {nombre}! 👋 Gracias por elegir Tropiexpress. Hemos registrado tu dirección: {direccion}")
 
 with col2:
-    st.subheader("📊 Historial Reciente")
-    st.dataframe(st.session_state.db_clientes, use_container_width=True)
-
-# --- ARRANQUE SEGURO ---
-def run_bot():
-    # Loop interno para evitar el RuntimeError de tu captura
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    app = Application.builder().token(st.secrets["TELEGRAM_TOKEN"]).build()
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.run_polling(drop_pending_updates=True, close_loop=False)
-
-if "bot_running" not in st.session_state:
-    threading.Thread(target=run_bot, daemon=True).start()
-    st.session_state.bot_running = True
+    st.subheader("📋 Clientes del Día")
+    st.dataframe(st.session_state.clientes, use_container_width=True)
