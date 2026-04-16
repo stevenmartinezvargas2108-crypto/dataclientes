@@ -1,26 +1,26 @@
 import streamlit as st
-import asyncio
+import threading
 import io
 import re
 import json
 import requests
+import asyncio
 from PIL import Image
 import google.generativeai as genai
 from telegram import Update, constants
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
-# Título en la web de Streamlit
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Tropiexpress Server", page_icon="🚛")
-st.title("🚛 Servidor Tropiexpress Activo")
+st.title("🚛 Tropiexpress: Servidor Activo")
 
-# --- LÓGICA DE EXTRACCIÓN MEJORADA ---
+# --- MOTOR DE INTELIGENCIA ARTIFICIAL ---
 def extraer_datos_ia(image_bytes):
     try:
         genai.configure(api_key=st.secrets["GEMINI_KEY"])
-        # Usamos configuraciones para saltar bloqueos de seguridad por datos personales
+        # Configuración agresiva para evitar bloqueos por "seguridad"
         model = genai.GenerativeModel(
             model_name='gemini-1.5-flash',
-            generation_config={"temperature": 0.1},
             safety_settings=[
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -28,78 +28,75 @@ def extraer_datos_ia(image_bytes):
                 {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
             ]
         )
-        
         img = Image.open(io.BytesIO(image_bytes))
-        prompt = "Lee la nota y entrega SOLO un JSON con llaves: nombre, tel, dir. Si no ves algo, pon 'S/D'."
-        
+        prompt = "Extrae Nombre, Tel y Dirección. Responde SOLO JSON: {'nombre':'', 'tel':'', 'dir':''}"
         response = model.generate_content([prompt, img])
         
-        # Limpieza del texto recibido
         texto_limpio = re.search(r'\{.*\}', response.text, re.DOTALL)
-        if texto_limpio:
-            return json.loads(texto_limpio.group(0))
-        return None
+        return json.loads(texto_limpio.group(0)) if texto_limpio else None
     except Exception as e:
-        st.error(f"Error técnico en IA: {e}")
+        print(f"Error en Gemini: {e}")
         return None
 
-# --- FUNCIONES DEL BOT ---
+# --- MANEJADORES DE TELEGRAM ---
 async def procesar_nota(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🔍 Tropiexpress: Leyendo nota...")
+    # Usamos respuesta inmediata para evitar que Telegram piense que el bot murió
+    msg = await update.message.reply_text("🚛 Tropiexpress está leyendo la nota...")
     
-    file = await update.message.photo[-1].get_file()
-    foto_bytes = await file.download_as_bytearray()
-    
-    datos = extraer_datos_ia(foto_bytes)
-    
-    if datos:
-        # Limpiar el teléfono para que solo queden números
-        datos['tel'] = ''.join(filter(str.isdigit, str(datos.get('tel', ''))))
-        context.user_data['datos'] = datos
+    try:
+        file = await update.message.photo[-1].get_file()
+        foto_bytes = await file.download_as_bytearray()
         
-        resumen = (
-            f"✅ *Nota Leída:*\n\n"
-            f"👤 *Cliente:* {datos.get('nombre')}\n"
-            f"📞 *Tel:* {datos.get('tel')}\n"
-            f"📍 *Dir:* {datos.get('dir')}\n\n"
-            "¿Guardar? (Responde *SI*)"
-        )
-        await msg.edit_text(resumen, parse_mode=constants.ParseMode.MARKDOWN)
-        return 1
-    
-    await msg.edit_text("❌ No logré extraer los datos. Intenta con otra foto.")
+        # Procesar en un ejecutor para no bloquear el bucle de eventos
+        loop = asyncio.get_event_loop()
+        datos = await loop.run_in_executor(None, extraer_datos_ia, foto_bytes)
+        
+        if datos:
+            datos['tel'] = ''.join(filter(str.isdigit, str(datos.get('tel', ''))))
+            context.user_data['datos'] = datos
+            resumen = (
+                f"✅ *¡Nota procesada!*\n\n"
+                f"👤 *Cliente:* {datos.get('nombre')}\n"
+                f"📞 *Tel:* {datos.get('tel')}\n"
+                f"📍 *Dir:* {datos.get('dir')}\n\n"
+                "¿Deseas guardar? (Responde *SI*)"
+            )
+            await msg.edit_text(resumen, parse_mode=constants.ParseMode.MARKDOWN)
+            return 1
+        else:
+            await msg.edit_text("⚠️ No pude leer los datos. Asegúrate de que la foto no tenga sombras.")
+    except Exception as e:
+        await msg.edit_text(f"❌ Error de procesamiento: {str(e)}")
     return ConversationHandler.END
 
-async def guardar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def guardar_datos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "SI" in update.message.text.upper():
-        try:
-            requests.post(st.secrets["SHEETS_URL"], json=context.user_data['datos'], timeout=10)
-            await update.message.reply_text("💾 ¡Guardado en tu Excel de Tropiexpress!")
-        except:
-            await update.message.reply_text("❌ Error al enviar a Google Sheets.")
+        d = context.user_data['datos']
+        requests.post(st.secrets["SHEETS_URL"], json=d, timeout=10)
+        await update.message.reply_text("💾 Guardado en tu base de datos.")
     return ConversationHandler.END
 
-# --- ARRANQUE DEL SERVIDOR ---
-if st.button("🚀 Iniciar/Reiniciar Bot"):
-    st.info("Iniciando conexión con Telegram...")
+# --- INICIALIZADOR DEL BOT ---
+def run_telegram_bot():
+    # Creamos un nuevo bucle de eventos para este hilo
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
-    # Configuración de la App de Telegram
     app = Application.builder().token(st.secrets["TELEGRAM_TOKEN"]).build()
     
-    conv_handler = ConversationHandler(
+    app.add_handler(ConversationHandler(
         entry_points=[MessageHandler(filters.PHOTO, procesar_nota)],
-        states={1: [MessageHandler(filters.TEXT & ~filters.COMMAND, guardar)]},
-        fallbacks=[]
-    )
+        states={1: [MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_datos)]},
+        fallbacks=[CommandHandler('start', lambda u,c: u.message.reply_text("Listo"))]
+    ))
     
-    app.add_handler(conv_handler)
-    
-    # Ejecución asíncrona para evitar el RuntimeError de la imagen anterior
-    async def run_bot():
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
-        st.success("✅ ¡Bot en línea! Envía una foto por Telegram.")
-        while True: await asyncio.sleep(3600)
+    st.write("🤖 Bot escuchando mensajes...")
+    app.run_polling(drop_pending_updates=True, close_loop=False)
 
-    asyncio.run(run_bot())
+# Evitar que Streamlit cree múltiples hilos al recargar
+if "bot_thread" not in st.session_state:
+    thread = threading.Thread(target=run_telegram_bot, daemon=True)
+    thread.start()
+    st.session_state["bot_thread"] = True
+
+st.success("✅ El sistema está en línea. Puedes cerrar esta pestaña y el bot seguirá trabajando.")
