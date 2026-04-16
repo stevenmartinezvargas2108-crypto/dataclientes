@@ -1,5 +1,5 @@
 streamlit
-python-telegram-bot
+python-telegram-bot==20.8
 google-generativeai
 Pillow
 requests
